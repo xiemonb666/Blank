@@ -1,0 +1,19 @@
+[Unit]
+Description=Backup Blank PostgreSQL database
+
+[Service]
+Type=oneshot
+User=blank
+Group=blank
+Environment=BLANK_DATABASE_URL=postgresql://blank:replace-password@127.0.0.1:5432/blank
+Environment=BLANK_BACKUP_DIR=/var/backups/blank
+ExecStart=/opt/blank/scripts/backup-postgres.sh
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/blank /var/backups/blank
+StateDirectory=blank
+CapabilityBoundingSet=
+AmbientCapabilities=

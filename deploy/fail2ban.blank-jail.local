@@ -1,0 +1,10 @@
+[blank-auth]
+enabled = true
+filter = blank-auth
+logpath = /var/log/blank/security.log
+backend = auto
+maxretry = 8
+findtime = 10m
+bantime = 1h
+port = http,https
+action = %(action_mwl)s

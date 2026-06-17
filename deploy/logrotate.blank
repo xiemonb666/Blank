@@ -1,0 +1,14 @@
+/var/log/blank/*.log /var/log/nginx/blank.*.log {
+    daily
+    rotate 30
+    missingok
+    notifempty
+    compress
+    delaycompress
+    dateext
+    create 0600 blank adm
+    sharedscripts
+    postrotate
+        systemctl kill -s USR1 nginx.service >/dev/null 2>&1 || true
+    endscript
+}

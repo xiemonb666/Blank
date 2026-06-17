@@ -1,0 +1,62 @@
+name: blank-learning
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: blank-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: blank
+      POSTGRES_PASSWORD: blank
+      POSTGRES_DB: blank
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - blank-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U blank -d blank"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    container_name: blank-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - blank-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  neo4j:
+    image: neo4j:5.26-community
+    container_name: blank-neo4j
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/change-this-password
+      NEO4J_server_memory_heap_initial__size: 512m
+      NEO4J_server_memory_heap_max__size: 1G
+      NEO4J_server_memory_pagecache_size: 512m
+    ports:
+      - "127.0.0.1:7474:7474"
+      - "127.0.0.1:7687:7687"
+    volumes:
+      - blank-neo4j-data:/data
+      - blank-neo4j-logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+volumes:
+  blank-postgres-data:
+  blank-redis-data:
+  blank-neo4j-data:
+  blank-neo4j-logs:

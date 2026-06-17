@@ -1,0 +1,9 @@
+name: blank-learning
+channels:
+  - conda-forge
+dependencies:
+  - python=3.13
+  - pip
+  - nodejs=22
+  - pip:
+      - -r backend/requirements-dev.txt
