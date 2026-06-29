@@ -1,0 +1,81 @@
+name: blank-learning-test-minimal
+
+# 精简测试环境：仅 PostgreSQL + Redis + 后端 pytest
+# 适用于网络受限或不需要 Neo4j 的场景。测试 fixture 默认关闭 GraphRAG，
+# 因此核心测试不依赖 Neo4j。需要完整环境请使用 compose.test.yaml。
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: blank-test-postgres
+    environment:
+      POSTGRES_USER: blank
+      POSTGRES_PASSWORD: blank
+      POSTGRES_DB: blank
+    volumes:
+      - blank-test-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U blank -d blank"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - blank-test-minimal
+
+  redis:
+    image: redis:7-alpine
+    container_name: blank-test-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - blank-test-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - blank-test-minimal
+
+  backend-test:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    container_name: blank-test-backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      BLANK_ENV: test
+      BLANK_DEBUG_LOG_ENABLED: "false"
+      BLANK_TEST_DATABASE_URL: postgresql://blank:blank@postgres:5432/blank_test
+      BLANK_DATABASE_URL: postgresql://blank:blank@postgres:5432/blank
+      BLANK_REDIS_URL: redis://redis:6379/0
+      BLANK_TEST_REDIS_URL: redis://redis:6379/15
+      BLANK_GRAPHRAG_ENABLED: "false"
+      BLANK_ALLOW_IN_MEMORY_RATE_LIMIT: "true"
+      BLANK_ALLOW_PRIVATE_MODEL_URLS: "true"
+    volumes:
+      - ./backend:/app/backend:ro
+      - ./backend/data:/app/backend/data
+    networks:
+      - blank-test-minimal
+    command:
+      - python
+      - -m
+      - pytest
+      - -v
+      - --tb=short
+      - test_api.py
+      - test_v2_api.py
+      - test_v2_agent_graph.py
+      - test_v2_feynman_agent.py
+
+volumes:
+  blank-test-postgres-data:
+  blank-test-redis-data:
+
+networks:
+  blank-test-minimal:
+    driver: bridge

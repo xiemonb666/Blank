@@ -102,6 +102,7 @@ def _build_agent_state(
         "node_title": active_node.title,
         "node_summary": active_node.summary,
         "persona": payload.persona,
+        "tutor_settings": session.tutor_settings.model_dump(),
         "user_message": (
             "学习者刚进入这个知识节点，还没有回答。请先提出第一个苏格拉底式起始问题：问题必须具体、容易开口、只聚焦当前节点的一个核心点。"
             if payload.starter_event

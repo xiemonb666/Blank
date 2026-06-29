@@ -60,6 +60,7 @@ import {
   deleteSession,
   exportBlindReviewAnswers,
   exportResearchExperiments,
+  getSpeechCapabilities,
   getFeynmanQuestions,
   getMe,
   getResearchDashboard,
@@ -78,8 +79,11 @@ import {
   SessionSummary,
   streamChatMessage,
   submitFeynman,
+  synthesizeSpeech,
+  transcribeSpeech,
   updateApiConfig,
   updateSessionPersona,
+  updateSessionTutorSettings,
   updateUser,
   uploadParseJob,
 } from "./api";
@@ -91,7 +95,9 @@ import type {
   KnowledgeNode,
   Persona,
   ResearchDashboard,
+  SpeechCapabilities,
   Stage,
+  TutorSettings,
   User,
 } from "./types";
 
@@ -142,6 +148,11 @@ function App() {
   const [researchDashboard, setResearchDashboard] = useState<ResearchDashboard | null>(() =>
     UI_REVIEW_STAGE === "research" ? UI_REVIEW_RESEARCH_DASHBOARD : null,
   );
+  const [speechCapabilities, setSpeechCapabilities] = useState<SpeechCapabilities>({
+    asr_enabled: false,
+    tts_enabled: false,
+  });
+  const [isSpeaking, setIsSpeaking] = useState(false);
   const [researchImportDraft, setResearchImportDraft] = useState("");
   const [authMode, setAuthMode] = useState<"login" | "register">("login");
   const [authUsername, setAuthUsername] = useState("");
@@ -157,6 +168,8 @@ function App() {
   const [lastChatSubmitAt, setLastChatSubmitAt] = useState(0);
   const lastChatSubmitAtRef = useRef(0);
   const introRequestedRef = useRef<Set<string>>(new Set());
+  const speechAudioRef = useRef<HTMLAudioElement | null>(null);
+  const speechUrlRef = useRef<string>("");
 
   const v2Chat = useV2Chat();
   const learningSession = useLearningSession({
@@ -172,6 +185,8 @@ function App() {
   const {
     persona,
     setPersona,
+    tutorSettings,
+    setTutorSettings,
     sessionId,
     setSessionId,
     materialTitle,
@@ -255,6 +270,19 @@ function App() {
       void restoreSession();
     }
   }, [token, user]);
+
+  useEffect(() => {
+    return () => {
+      if (speechAudioRef.current) {
+        speechAudioRef.current.pause();
+        speechAudioRef.current = null;
+      }
+      if (speechUrlRef.current) {
+        URL.revokeObjectURL(speechUrlRef.current);
+        speechUrlRef.current = "";
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!lastChatSubmitAt) return;
@@ -706,6 +734,14 @@ function App() {
     feynman.moveStep(offset);
   }
 
+  async function transcribeAnswerAudio(audio: Blob) {
+    const response = await transcribeSpeech(audio, {
+      language: "zh",
+      prompt: activeNode ? `当前知识点：${activeNode.title}` : undefined,
+    });
+    return response.text;
+  }
+
   async function changePersona(nextPersona: Persona) {
     const previousPersona = persona;
     setPersona(nextPersona);
@@ -715,6 +751,7 @@ function App() {
       await runBusy(async () => {
         const session = await updateSessionPersona(sessionId, nextPersona);
         setPersona(session.persona);
+        setTutorSettings(session.tutor_settings ?? tutorSettings);
         setMaterialTitle(session.material_title);
         setNodes(session.nodes);
         setActiveNodeId(session.active_node_id);
@@ -727,6 +764,29 @@ function App() {
       });
     } catch {
       setPersona(previousPersona);
+    }
+  }
+
+  async function changeTutorSettings(nextSettings: TutorSettings) {
+    const previousSettings = tutorSettings;
+    setTutorSettings(nextSettings);
+    if (UI_REVIEW_STAGE) return;
+    if (!sessionId) return;
+    try {
+      await runBusy(async () => {
+        const session = await updateSessionTutorSettings(sessionId, nextSettings);
+        setTutorSettings(session.tutor_settings ?? nextSettings);
+        setMaterialTitle(session.material_title);
+        setNodes(session.nodes);
+        setActiveNodeId(session.active_node_id);
+        hydrateActiveNodeThread(session);
+        setMemories(session.memories);
+        setNodeProfiles(resolveNodeProfiles(session));
+        setFeynmanAssessmentsByNodeId(session.feynman_assessments ?? {});
+        await refreshSessions();
+      });
+    } catch {
+      setTutorSettings(previousSettings);
     }
   }
 
@@ -745,6 +805,7 @@ function App() {
     resetFeynmanState();
     setDraftsByNodeId({});
     setPersona("plain");
+    setTutorSettings({ depth_level: 5, learning_style: "active", communication_type: "socratic" });
     setStage("canvas");
     setFailureCount(0);
     setDowngradedOverride(false);
@@ -764,6 +825,7 @@ function App() {
     setNodes(session.nodes);
     setActiveNodeId(session.active_node_id);
     setPersona(session.persona ?? "plain");
+    setTutorSettings(session.tutor_settings ?? { depth_level: 5, learning_style: "active", communication_type: "socratic" });
     hydrateActiveNodeThread(session);
     setMemories(session.memories);
     setNodeProfiles(resolveNodeProfiles(session));
@@ -820,6 +882,7 @@ function App() {
       setUser(response.user);
       setAuthPassword("");
       await refreshSessions();
+      await refreshSpeech();
       if (response.user.role === "admin") {
         await refreshAdmin();
       }
@@ -835,6 +898,7 @@ function App() {
         setToken("cookie");
         setUser(currentUser);
         await refreshSessions();
+        await refreshSpeech();
         if (currentUser.role === "admin") {
           await refreshAdmin();
         }
@@ -852,6 +916,15 @@ function App() {
     if (!token) return;
     const history = await listSessions();
     setSessions(history);
+  }
+
+  async function refreshSpeech() {
+    try {
+      const capabilities = await getSpeechCapabilities();
+      setSpeechCapabilities(capabilities);
+    } catch {
+      setSpeechCapabilities({ asr_enabled: false, tts_enabled: false });
+    }
   }
 
   async function openHistorySession(summary: SessionSummary) {
@@ -983,8 +1056,10 @@ function App() {
     }
     localStorage.removeItem(AUTH_SESSION_STORAGE_KEY);
     localStorage.removeItem(LEGACY_TOKEN_STORAGE_KEY);
+    stopSpeechPlayback();
     setToken("");
     setUser(null);
+    setSpeechCapabilities({ asr_enabled: false, tts_enabled: false });
     setSessionId(null);
     setSessions([]);
     setAdminUsers([]);
@@ -1001,6 +1076,44 @@ function App() {
       setError(caught instanceof Error ? caught.message : "请求失败，请检查后端服务。");
     } finally {
       setIsBusy(false);
+    }
+  }
+
+  function stopSpeechPlayback() {
+    if (speechAudioRef.current) {
+      speechAudioRef.current.pause();
+      speechAudioRef.current = null;
+    }
+    if (speechUrlRef.current) {
+      URL.revokeObjectURL(speechUrlRef.current);
+      speechUrlRef.current = "";
+    }
+    setIsSpeaking(false);
+  }
+
+  async function playSpeechText(text: string) {
+    const normalized = text.trim();
+    if (!normalized || !speechCapabilities.tts_enabled) return;
+    stopSpeechPlayback();
+    setIsSpeaking(true);
+    try {
+      const { blob } = await synthesizeSpeech(normalized, {
+        language: "zh",
+        voice: speechCapabilities.tts_voice ?? undefined,
+      });
+      const url = URL.createObjectURL(blob);
+      speechUrlRef.current = url;
+      const audio = new Audio(url);
+      speechAudioRef.current = audio;
+      audio.onended = () => stopSpeechPlayback();
+      audio.onerror = () => {
+        stopSpeechPlayback();
+        setError("语音播报失败，请检查 TTS 服务。");
+      };
+      await audio.play();
+    } catch (caught) {
+      stopSpeechPlayback();
+      setError(caught instanceof Error ? caught.message : "语音播报失败，请检查 TTS 服务。");
     }
   }
 
@@ -1142,7 +1255,9 @@ function App() {
           nodeMessageCounts={nodeMessageCounts}
           profile={activeProfile}
           persona={persona}
+          tutorSettings={tutorSettings}
           onPersonaChange={changePersona}
+          onTutorSettingsChange={changeTutorSettings}
           onDraftChange={(value) =>
             setDraftsByNodeId((current) => ({ ...current, [activeNode.id]: value }))
           }
@@ -1158,6 +1273,9 @@ function App() {
           agentEvents={UI_REVIEW_STAGE === "flow" ? UI_REVIEW_AGENT_EVENTS : activeAgentTrace?.agentEvents}
           isAgentStreaming={UI_REVIEW_STAGE === "flow" ? false : activeAgentTrace?.isStreaming}
           thoughts={activeAgentTrace?.thoughts}
+          ttsEnabled={speechCapabilities.tts_enabled}
+          isSpeaking={isSpeaking}
+          onSpeakText={playSpeechText}
         />
       )}
 
@@ -1173,6 +1291,11 @@ function App() {
           onReload={enterFeynmanStage}
           onComplete={completeFeynman}
           isBusy={isBusy || isFeynmanAdvancing}
+          asrEnabled={speechCapabilities.asr_enabled}
+          ttsEnabled={speechCapabilities.tts_enabled}
+          isSpeaking={isSpeaking}
+          onSpeakText={playSpeechText}
+          onTranscribeAudio={transcribeAnswerAudio}
         />
       )}
 

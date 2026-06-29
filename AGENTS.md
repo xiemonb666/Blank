@@ -63,7 +63,13 @@ Blank 是一个教育学习闭环 MVP，核心流程为：**输入 -> 拆解 -> 
 ├── scripts/                 # 开发、测试、部署、安全审计脚本（bash）
 ├── deploy/                  # 生产部署模板（systemd、nginx、fail2ban、logrotate）
 ├── start.sh                 # 一键启动脚本（自动装依赖、启动前后端）
+├── Dockerfile               # 后端生产/开发 Docker 镜像
+├── Dockerfile.test          # 后端测试 Docker 镜像
+├── compose.yaml             # 基础设施编排（PostgreSQL + Redis + Neo4j）
+├── compose.full.yaml        # 一体化编排（后端 + PostgreSQL + Redis + Neo4j）
+├── compose.test.yaml        # 一体化测试编排
 ├── environment.yml          # Conda 环境定义（Python 3.13 + Node 22）
+├── .dockerignore            # Docker 构建上下文排除规则
 └── .env.example             # 环境变量模板
 ```
 
@@ -115,12 +121,76 @@ npm run build
 # 产物输出到 pwa/dist/
 ```
 
+### Docker 完整环境启动（后端 + PostgreSQL + Redis + Neo4j）
+
+项目已提供生产/开发通用的后端镜像 `Dockerfile` 与一体化编排 `compose.full.yaml`，适合不想在本地安装 Python/Conda 依赖的场景：
+
+```bash
+# 启动完整环境（自动构建后端镜像）
+./scripts/start-in-docker.sh
+
+# 强制重新构建后端镜像
+./scripts/start-in-docker.sh --build
+
+# 查看后端日志
+./scripts/start-in-docker.sh --logs
+
+# 停止并清理所有容器与数据卷
+./scripts/start-in-docker.sh --down
+```
+
+启动后会暴露：
+- 后端 API：`http://127.0.0.1:8000`
+- API 文档：`http://127.0.0.1:8000/docs`
+- Neo4j Browser：`http://127.0.0.1:7474`
+- PostgreSQL：`127.0.0.1:5432`
+- Redis：`127.0.0.1:6379`
+
+你也可以直接使用 `docker compose`：
+
+```bash
+# 启动
+docker compose -f compose.full.yaml up --build -d
+
+# 停止
+docker compose -f compose.full.yaml down
+
+# 停止并清理数据卷
+docker compose -f compose.full.yaml down -v
+```
+
+**注意**：`compose.full.yaml` 默认使用开发友好配置。生产部署前必须在 `.env` 中设置强密码并满足生产启动硬门槛。
+
 ### 后端测试
+
+#### 本地 venv 方式
 ```bash
 source backend/.venv/bin/activate
 pip install -r backend/requirements-dev.txt
 python -m pytest backend/test_api.py
 ```
+
+#### Docker 一体化测试（推荐用于 WSL2 / 干净环境）
+项目已提供 `Dockerfile.test` + `compose.test.yaml`，在容器内启动 PostgreSQL、Redis、Neo4j 并自动运行全部后端测试：
+
+```bash
+# WSL2 Ubuntu 26.04 中，进入项目目录后执行
+./scripts/test-in-docker.sh
+
+# 强制重新构建镜像
+./scripts/test-in-docker.sh --build
+
+# 测试完成后清理容器与卷
+./scripts/test-in-docker.sh --down
+```
+
+该脚本会：
+1. 启动 `postgres:16-alpine`、`redis:7-alpine`、`neo4j:5.26-community` 三个容器。
+2. 等待服务健康后创建 `blank_test` 测试数据库。
+3. 构建/启动 `backend-test` 容器，运行 `backend/test_api.py`、`test_v2_api.py`、`test_v2_agent_graph.py`、`test_v2_feynman_agent.py`。
+4. 返回 pytest 的退出码，并在 `--down` 时清理环境。
+
+注意：测试 fixture（`isolated_store`）默认关闭 GraphRAG、使用内存限流，因此核心测试不依赖 Redis/Neo4j；但 compose 环境仍提供完整依赖，便于本地调试与后续扩展。
 
 ### 完整安全审计
 ```bash
@@ -278,6 +348,8 @@ python -m pytest backend/test_api.py
 | `./start.sh` | 一键启动前后端开发服务 |
 | `./scripts/infra.sh up` | 启动本地 PostgreSQL、Redis、Neo4j 开发依赖 |
 | `./scripts/dev.sh` | 仅启动开发服务（不自动装依赖） |
+| `./scripts/start-in-docker.sh` | 一键 Docker 启动后端 + PostgreSQL + Redis + Neo4j |
+| `./scripts/test-in-docker.sh` | Docker 中运行后端测试 |
 | `./scripts/security-audit.sh` | 完整安全审计与构建验证 |
 | `./scripts/test-production-security.sh` | 生产启动配置门禁检查 |
 | `./scripts/test-secret-scan.sh` | Secret 泄露扫描（含假阳性自检） |

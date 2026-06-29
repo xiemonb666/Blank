@@ -1,0 +1,39 @@
+# syntax=docker/dockerfile:1
+# Blank 后端测试环境镜像
+# 基于 Python 3.13 官方镜像，包含 PostgreSQL/Redis/Neo4j 的 Python 驱动与测试依赖
+# 用法见 scripts/test-in-docker.sh
+
+FROM python:3.13-slim
+
+WORKDIR /app
+
+# 安装系统级编译依赖与 PostgreSQL 客户端库
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libpq-dev \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+# 先复制依赖文件，利用 Docker 缓存层：只有 requirements 变化时才重新 pip install
+COPY backend/requirements.txt backend/requirements-dev.txt ./backend/
+
+# 安装 Python 依赖（生产 + 开发）
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r backend/requirements-dev.txt
+
+# 复制后端源码
+COPY backend/ ./backend/
+
+# 测试相关环境变量默认值
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app/backend \
+    BLANK_ENV=test \
+    BLANK_ALLOW_IN_MEMORY_RATE_LIMIT=true \
+    BLANK_GRAPHRAG_ENABLED=false \
+    BLANK_ALLOW_PRIVATE_MODEL_URLS=true
+
+WORKDIR /app/backend
+
+# 默认执行全部后端测试
+CMD ["python", "-m", "pytest", "-v"]

@@ -10,7 +10,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 from urllib.parse import urlparse
 
-from fastapi import Cookie, Depends, FastAPI, File, Header, HTTPException, Query, Request, Response, UploadFile
+from fastapi import Cookie, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -53,9 +53,21 @@ from .models import (
     SessionCreateRequest,
     SessionCreateResponse,
     SessionSummary,
+    SpeechCapabilitiesResponse,
+    SpeechSynthesisRequest,
+    SpeechTranscriptionResponse,
+    TutorSettings,
+    TutorSettingsRequest,
     UserCreateRequest,
     UserPublic,
     UserUpdateRequest,
+)
+from .speech import (
+    MAX_SPEECH_UPLOAD_BYTES,
+    SpeechServiceError,
+    speech_capabilities,
+    synthesize_speech,
+    transcribe_audio,
 )
 from .services import (
     AiChatError,
@@ -67,6 +79,7 @@ from .services import (
     generate_feynman_follow_up,
     generate_feynman_questions,
     messages_for_node,
+    prewarm_learning_assets,
     save_feynman_answer,
     select_node,
     set_token_usage_recorder,
@@ -120,6 +133,7 @@ PARSE_JOB_SEMAPHORE = BoundedSemaphore(max_concurrent_parse_jobs())
 SESSION_CREATE_RATE_LIMIT = 12
 CHAT_RATE_LIMIT = 60
 FEYNMAN_RATE_LIMIT = 20
+SPEECH_RATE_LIMIT = 30
 ADMIN_WRITE_RATE_LIMIT = 20
 ADMIN_REAUTH_MAX_AGE_SECONDS = 10 * 60
 REAUTH_RATE_LIMIT = 5
@@ -705,6 +719,57 @@ def health() -> HealthResponse:
     return HealthResponse(ok=True, service="blank-api")
 
 
+@app.get("/api/speech/capabilities", response_model=SpeechCapabilitiesResponse)
+def get_speech_capabilities(user: UserPublic = Depends(require_user)) -> SpeechCapabilitiesResponse:
+    del user
+    return speech_capabilities()
+
+
+@app.post("/api/speech/asr/transcribe", response_model=SpeechTranscriptionResponse)
+async def transcribe_speech(
+    file: UploadFile = File(...),
+    language: str | None = Form(default=None),
+    prompt: str | None = Form(default=None),
+    user: UserPublic = Depends(require_user),
+) -> SpeechTranscriptionResponse:
+    enforce_rate_limit(f"speech-asr:{user.id}", SPEECH_RATE_LIMIT)
+    raw = await read_upload_bytes_limited(file, MAX_SPEECH_UPLOAD_BYTES)
+    try:
+        response = transcribe_audio(
+            raw,
+            filename=file.filename or "recording.webm",
+            content_type=file.content_type or "application/octet-stream",
+            language=language,
+            prompt=prompt,
+        )
+    except SpeechServiceError as exc:
+        log_debug_event("speech.asr.error", user_id=user.id, error=str(exc))
+        raise HTTPException(status_code=502, detail=redact_secret_text(str(exc), limit=220)) from exc
+    return response
+
+
+@app.post("/api/speech/tts")
+def synthesize_speech_route(
+    payload: SpeechSynthesisRequest,
+    user: UserPublic = Depends(require_user),
+):
+    enforce_rate_limit(f"speech-tts:{user.id}", SPEECH_RATE_LIMIT)
+    try:
+        result = synthesize_speech(payload.text, voice=payload.voice, language=payload.language)
+    except SpeechServiceError as exc:
+        log_debug_event("speech.tts.error", user_id=user.id, error=str(exc))
+        raise HTTPException(status_code=502, detail=redact_secret_text(str(exc), limit=220)) from exc
+    return StreamingResponse(
+        iter([result.audio]),
+        media_type=result.content_type,
+        headers={
+            "Content-Length": str(len(result.audio)),
+            "X-Blank-Speech-Provider": result.provider,
+            "X-Blank-Speech-Voice": result.voice or "",
+        },
+    )
+
+
 @app.post("/api/auth/register", response_model=AuthResponse)
 def register(payload: UserCreateRequest, request: Request, response: Response) -> AuthResponse:
     require_trusted_origin_for_cookie_issue(request)
@@ -807,7 +872,8 @@ def create_learning_session(
 ) -> SessionCreateResponse:
     enforce_rate_limit(f"session-create:{user.id}", SESSION_CREATE_RATE_LIMIT)
     try:
-        session = create_session(payload.title, payload.content, user.id, active_api_config_or_error())
+        ai_config = active_api_config_or_error()
+        session = create_session(payload.title, payload.content, user.id, ai_config)
     except AiSplitError as exc:
         raise HTTPException(status_code=502, detail=redact_secret_text(str(exc))) from exc
     store.save_session(session)
@@ -1024,6 +1090,20 @@ def save_session_persona(session_id: str, payload: PersonaRequest, user: UserPub
     session_id = require_resource_id(session_id, "会话")
     session = require_session(session_id, user)
     session.persona = payload.persona
+    session.updated_at = datetime.now(UTC)
+    store.save_session(session)
+    return public_session_for_user(session, user)
+
+
+@app.patch("/api/sessions/{session_id}/tutor-settings", response_model=LearningSessionPublic)
+def update_session_tutor_settings(
+    session_id: str,
+    payload: TutorSettingsRequest,
+    user: UserPublic = Depends(require_user),
+) -> LearningSessionPublic:
+    session_id = require_resource_id(session_id, "会话")
+    session = require_session(session_id, user)
+    session.tutor_settings = TutorSettings.model_validate(payload.model_dump())
     session.updated_at = datetime.now(UTC)
     store.save_session(session)
     return public_session_for_user(session, user)
@@ -1626,6 +1706,16 @@ def run_parse_job(job_id: str) -> None:
         session.parse_message = f"{session.parse_message}；{graph_message}"
         store.update_parse_job(job_id, "running", 88, "GraphRAG 处理完成", now_iso())
         log_debug_event("parse.job.progress", job_id=job_id, status="running", progress=88, message=graph_message)
+        store.update_parse_job(job_id, "running", 92, "正在提前准备导师首句和讲台问题", now_iso())
+        log_debug_event("parse.job.progress", job_id=job_id, status="running", progress=92, message="正在提前准备导师首句和讲台问题")
+        prewarm_stats = prewarm_learning_assets(session, ai_config)
+        session.parse_message = (
+            f"{session.parse_message}；已预生成 {prewarm_stats['starters']} 个导师首句、"
+            f"{prewarm_stats['questions']} 组费曼问题"
+        )
+        if prewarm_stats["errors"]:
+            session.parse_message = f"{session.parse_message}（{prewarm_stats['errors']} 个节点预热失败，进入时自动补齐）"
+        log_debug_event("parse.job.prewarm.completed", job_id=job_id, session_id=session.id, stats=prewarm_stats)
         store.update_parse_job(job_id, "running", 96, "正在保存学习记录", now_iso())
         log_debug_event("parse.job.progress", job_id=job_id, status="running", progress=96, message="正在保存学习记录")
         store.save_session(session)

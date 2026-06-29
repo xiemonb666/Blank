@@ -1,4 +1,6 @@
 export type Persona = "plain" | "vivid" | "academic";
+export type TutorLearningStyle = "visual" | "verbal" | "active";
+export type TutorCommunicationType = "socratic" | "story" | "textbook" | "coach";
 export type NodeStatus = "mastered" | "active" | "available" | "locked";
 export type Stage = "canvas" | "map" | "flow" | "feynman" | "mastery" | "evidence" | "research" | "admin";
 export type UserRole = "admin" | "learner";
@@ -25,6 +27,12 @@ export interface Message {
   node_id?: string | null;
   thinking?: string | null;
   created_at?: string;
+}
+
+export interface TutorSettings {
+  depth_level: number;
+  learning_style: TutorLearningStyle;
+  communication_type: TutorCommunicationType;
 }
 
 export interface DiagnosticItem {
@@ -133,6 +141,21 @@ export interface ApiConfig {
   is_active: boolean;
   created_at: string;
   updated_at: string;
+}
+
+export interface SpeechCapabilities {
+  asr_enabled: boolean;
+  tts_enabled: boolean;
+  asr_provider?: string | null;
+  asr_model?: string | null;
+  tts_provider?: string | null;
+  tts_voice?: string | null;
+}
+
+export interface SpeechTranscription {
+  text: string;
+  provider?: string | null;
+  model?: string | null;
 }
 
 export interface ResearchMetric {

@@ -11,6 +11,8 @@ def utc_now() -> datetime:
 
 
 Persona = Literal["plain", "vivid", "academic"]
+TutorLearningStyle = Literal["visual", "verbal", "active"]
+TutorCommunicationType = Literal["socratic", "story", "textbook", "coach"]
 NodeStatus = Literal["mastered", "active", "available", "locked"]
 MessageRole = Literal["mentor", "learner"]
 UserRole = Literal["admin", "learner"]
@@ -44,6 +46,12 @@ class ChatMessage(BaseModel):
     node_id: str | None = None
     thinking: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
+
+
+class TutorSettings(BaseModel):
+    depth_level: int = Field(default=5, ge=1, le=10)
+    learning_style: TutorLearningStyle = "active"
+    communication_type: TutorCommunicationType = "socratic"
 
 
 class DiagnosticItem(BaseModel):
@@ -141,6 +149,7 @@ class LearningSession(BaseModel):
     nodes: list[KnowledgeNode]
     active_node_id: str
     persona: Persona = "plain"
+    tutor_settings: TutorSettings = Field(default_factory=TutorSettings)
     messages: list[ChatMessage]
     memories: list[MemoryEntry] = Field(default_factory=list)
     node_profiles: dict[str, NodeLearningProfile] = Field(default_factory=dict)
@@ -163,6 +172,7 @@ class LearningSessionPublic(BaseModel):
     nodes: list[KnowledgeNode]
     active_node_id: str
     persona: Persona = "plain"
+    tutor_settings: TutorSettings = Field(default_factory=TutorSettings)
     messages: list[ChatMessage]
     active_messages: list[ChatMessage] = Field(default_factory=list)
     message_counts: dict[str, int] = Field(default_factory=dict)
@@ -483,6 +493,12 @@ class PersonaRequest(StrictRequestModel):
     persona: Persona
 
 
+class TutorSettingsRequest(StrictRequestModel):
+    depth_level: int = Field(default=5, ge=1, le=10)
+    learning_style: TutorLearningStyle = "active"
+    communication_type: TutorCommunicationType = "socratic"
+
+
 class NodeSelectRequest(StrictRequestModel):
     node_id: str
 
@@ -563,6 +579,27 @@ class ApiConfigUpdateRequest(StrictRequestModel):
     api_key: str | None = Field(default=None, max_length=1000)
     model: str | None = Field(default=None, max_length=120)
     is_active: bool | None = None
+
+
+class SpeechCapabilitiesResponse(BaseModel):
+    asr_enabled: bool = False
+    tts_enabled: bool = False
+    asr_provider: str | None = None
+    asr_model: str | None = None
+    tts_provider: str | None = None
+    tts_voice: str | None = None
+
+
+class SpeechTranscriptionResponse(BaseModel):
+    text: str = Field(default="", max_length=4000)
+    provider: str | None = None
+    model: str | None = None
+
+
+class SpeechSynthesisRequest(StrictRequestModel):
+    text: str = Field(min_length=1, max_length=4000)
+    voice: str | None = Field(default=None, max_length=80)
+    language: str | None = Field(default=None, max_length=24)
 
 
 class HealthResponse(BaseModel):

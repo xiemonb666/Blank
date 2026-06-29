@@ -17,6 +17,7 @@ class AgentState(TypedDict):
     node_title: str
     node_summary: str
     persona: str  # "plain" | "vivid" | "academic"
+    tutor_settings: dict[str, object]
     user_message: str
     chat_history: list[dict[str, str]]  # [{"role": "learner"/"mentor", "text": "..."}]
     memories: list[dict[str, str]]  # 长期记忆条目

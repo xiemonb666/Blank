@@ -5,9 +5,13 @@
 /DerivedData
 /xtool
 /.tools
+/.env
+/.env.local
 
 /pwa/node_modules
 /pwa/dist
+/pwa/.env
+/pwa/.env.local
 /backend/.venv
 /backend/data
 /backups

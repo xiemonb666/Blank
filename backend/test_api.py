@@ -33,6 +33,7 @@ from app.services import (
 from app.secrets import SecretConfigurationError
 from app import security as security_module
 from app.security import clear_rate_limits
+from app.speech import safe_audio_filename
 from app.store import ParseJobCreateBlocked, SessionStore
 from app.redis_client import redis_rate_limit_check
 
@@ -863,6 +864,7 @@ def test_security_headers_and_upload_size_limit() -> None:
     assert health.headers["cross-origin-opener-policy"] == "same-origin"
     assert health.headers["cross-origin-resource-policy"] == "same-site"
     assert health.headers["cache-control"] == "no-store"
+    assert health.headers["permissions-policy"] == "camera=(), microphone=(self), geolocation=(), payment=()"
     csp = health.headers["content-security-policy"]
     for directive in [
         "default-src 'none'",
@@ -884,6 +886,72 @@ def test_security_headers_and_upload_size_limit() -> None:
     )
     assert response.status_code == 413
     assert "文件过大" in response.json()["detail"]
+
+
+def test_speech_capabilities_and_asr_transcription(monkeypatch) -> None:
+    speech_server = FakeSpeechServer()
+    speech_server.start()
+    client = TestClient(app_main.app)
+    headers = auth_headers(client, "tester_speech_asr")
+    monkeypatch.setenv("BLANK_ASR_BASE_URL", speech_server.base_url)
+    monkeypatch.setenv("BLANK_ASR_MODEL", "SenseVoiceSmall")
+    monkeypatch.setenv("BLANK_ASR_API_KEY", "speech-asr-secret")
+
+    try:
+        capabilities = client.get("/api/speech/capabilities", headers=headers)
+        assert capabilities.status_code == 200
+        assert capabilities.json()["asr_enabled"] is True
+        assert capabilities.json()["asr_model"] == "SenseVoiceSmall"
+
+        response = client.post(
+            "/api/speech/asr/transcribe",
+            headers=headers,
+            files={"file": ("recording.webm", b"fake-webm-audio", "audio/webm")},
+            data={"language": "zh", "prompt": "当前知识点：注意力机制"},
+        )
+        assert response.status_code == 200
+        assert response.json()["text"] == "这是 SenseVoice 返回的转写文本。"
+        assert speech_server.requests[0]["path"] == "/v1/audio/transcriptions"
+        assert speech_server.requests[0]["authorization"] == "Bearer speech-asr-secret"
+        assert b'filename="recording.webm"' in speech_server.requests[0]["body"]
+    finally:
+        speech_server.stop()
+
+
+def test_speech_upload_filename_is_sanitized_for_multipart() -> None:
+    filename = safe_audio_filename('讲解"\r\nX-Injected: yes.webm', "audio/webm")
+
+    assert filename == "X-Injected_yes.webm"
+    assert '"' not in filename
+    assert "\r" not in filename
+    assert "\n" not in filename
+
+
+def test_speech_tts_endpoint_streams_audio(monkeypatch) -> None:
+    speech_server = FakeSpeechServer()
+    speech_server.start()
+    client = TestClient(app_main.app)
+    headers = auth_headers(client, "tester_speech_tts")
+    monkeypatch.setenv("BLANK_TTS_BASE_URL", speech_server.base_url)
+    monkeypatch.setenv("BLANK_TTS_MODEL", "supertonic")
+    monkeypatch.setenv("BLANK_TTS_API_KEY", "speech-tts-secret")
+    monkeypatch.setenv("BLANK_TTS_VOICE", "F1")
+
+    try:
+        response = client.post(
+            "/api/speech/tts",
+            headers=headers,
+            json={"text": "把这一题读给我听"},
+        )
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("audio/wav")
+        assert response.headers["x-blank-speech-provider"] == "supertonic-http"
+        assert response.content.startswith(b"RIFF")
+        assert speech_server.requests[0]["path"] == "/v1/audio/speech"
+        assert speech_server.requests[0]["authorization"] == "Bearer speech-tts-secret"
+        assert speech_server.requests[0]["json"]["voice"] == "F1"
+    finally:
+        speech_server.stop()
 
 
 def test_fetch_metadata_blocks_cross_site_write_requests() -> None:
@@ -4448,6 +4516,73 @@ class FakeModelServer:
                 owner.response_count += 1
                 payload = json.dumps(response).encode("utf-8")
                 self.send_response(status)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *_: object) -> None:
+                return
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        host, port = self.server.server_address
+        self.base_url = f"http://{host}:{port}"
+        self.thread = Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    def stop(self) -> None:
+        if self.server is not None:
+            self.server.shutdown()
+            self.server.server_close()
+        if self.thread is not None:
+            self.thread.join(timeout=2)
+
+
+class FakeSpeechServer:
+    def __init__(self) -> None:
+        self.requests: list[dict] = []
+        self.server: ThreadingHTTPServer | None = None
+        self.thread: Thread | None = None
+        self.base_url = ""
+
+    def start(self) -> None:
+        owner = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                length = int(self.headers.get("content-length", "0"))
+                body = self.rfile.read(length)
+                record = {
+                    "path": self.path,
+                    "authorization": self.headers.get("authorization"),
+                    "content_type": self.headers.get("content-type"),
+                    "body": body,
+                    "json": None,
+                }
+                if self.headers.get("content-type", "").startswith("application/json"):
+                    record["json"] = json.loads(body.decode("utf-8"))
+                owner.requests.append(record)
+
+                if self.path.endswith("/audio/transcriptions"):
+                    payload = json.dumps({"text": "这是 SenseVoice 返回的转写文本。"}).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("content-type", "application/json")
+                    self.send_header("content-length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    return
+
+                if self.path.endswith("/audio/speech"):
+                    payload = b"RIFFfakewavdata"
+                    self.send_response(200)
+                    self.send_header("content-type", "audio/wav")
+                    self.send_header("content-length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    return
+
+                payload = b'{"error":"not found"}'
+                self.send_response(404)
                 self.send_header("content-type", "application/json")
                 self.send_header("content-length", str(len(payload)))
                 self.end_headers()

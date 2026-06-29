@@ -1,0 +1,112 @@
+name: blank-learning-test
+
+# 一体化测试环境：PostgreSQL + Redis + Neo4j + 后端 pytest
+# 用法：docker compose -f compose.test.yaml up --build --abort-on-container-exit
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: blank-test-postgres
+    environment:
+      POSTGRES_USER: blank
+      POSTGRES_PASSWORD: blank
+      POSTGRES_DB: blank
+    volumes:
+      - blank-test-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U blank -d blank"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - blank-test
+
+  redis:
+    image: redis:7-alpine
+    container_name: blank-test-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - blank-test-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - blank-test
+
+  neo4j:
+    image: neo4j:5.26-community
+    container_name: blank-test-neo4j
+    environment:
+      NEO4J_AUTH: neo4j/change-this-password
+      NEO4J_server_memory_heap_initial__size: 512m
+      NEO4J_server_memory_heap_max__size: 1G
+      NEO4J_server_memory_pagecache_size: 512m
+    volumes:
+      - blank-test-neo4j-data:/data
+      - blank-test-neo4j-logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    networks:
+      - blank-test
+
+  backend-test:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    container_name: blank-test-backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    environment:
+      BLANK_ENV: test
+      BLANK_DEBUG_LOG_ENABLED: "false"
+      # 测试数据库（pytest fixture 优先读取 BLANK_TEST_DATABASE_URL）
+      BLANK_TEST_DATABASE_URL: postgresql://blank:blank@postgres:5432/blank_test
+      BLANK_DATABASE_URL: postgresql://blank:blank@postgres:5432/blank
+      # Redis 与 Neo4j 由容器名解析
+      BLANK_REDIS_URL: redis://redis:6379/0
+      BLANK_TEST_REDIS_URL: redis://redis:6379/15
+      BLANK_NEO4J_URI: bolt://neo4j:7687
+      BLANK_NEO4J_USER: neo4j
+      BLANK_NEO4J_PASSWORD: change-this-password
+      # 测试 fixture 中会强制关闭 GraphRAG 与使用内存限流，
+      # 但这里仍给出完整环境变量以便单独调试。
+      BLANK_GRAPHRAG_ENABLED: "false"
+      BLANK_ALLOW_IN_MEMORY_RATE_LIMIT: "true"
+      BLANK_ALLOW_PRIVATE_MODEL_URLS: "true"
+    volumes:
+      # 挂载源码，避免每次改代码都重新构建镜像
+      - ./backend:/app/backend:ro
+      # 将测试报告写回宿主机
+      - ./backend/data:/app/backend/data
+    networks:
+      - blank-test
+    command:
+      - python
+      - -m
+      - pytest
+      - -v
+      - --tb=short
+      - test_api.py
+      - test_v2_api.py
+      - test_v2_agent_graph.py
+      - test_v2_feynman_agent.py
+
+volumes:
+  blank-test-postgres-data:
+  blank-test-redis-data:
+  blank-test-neo4j-data:
+  blank-test-neo4j-logs:
+
+networks:
+  blank-test:
+    driver: bridge

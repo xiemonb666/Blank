@@ -18,6 +18,9 @@ import type {
   ResearchExperimentExport,
   ResearchExperimentImportResponse,
   ResearchExperimentRecordInput,
+  SpeechCapabilities,
+  SpeechTranscription,
+  TutorSettings,
   User,
   UserRole,
 } from "./types";
@@ -26,6 +29,19 @@ export const API_BASE = resolveApiBaseUrl(import.meta.env.VITE_API_BASE_URL);
 const CSRF_COOKIE_NAME = "__Host-blank_csrf";
 const DEV_CSRF_COOKIE_NAME = "blank_csrf";
 const CSRF_PROTECTED_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+function isPrivateIpAddress(host: string): boolean {
+  const parts = host.split(".").map(Number);
+  if (parts.length === 4 && parts.every((p) => Number.isInteger(p) && p >= 0 && p <= 255)) {
+    const [a, b, c] = parts;
+    return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
+  }
+  return false;
+}
+
+function isLoopbackHost(host: string): boolean {
+  return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
+}
 
 function resolveApiBaseUrl(configured?: string) {
   const fallback =
@@ -38,9 +54,10 @@ function resolveApiBaseUrl(configured?: string) {
   }
   const base = new URL(raw, typeof window === "undefined" ? "http://127.0.0.1" : window.location.origin);
   const host = base.hostname.toLowerCase();
-  const isLocal = host === "localhost" || host === "127.0.0.1" || host === "::1";
-  if (base.protocol !== "https:" && !(base.protocol === "http:" && isLocal)) {
-    throw new Error("API 地址必须使用 HTTPS，本地开发仅允许 localhost/127.0.0.1 HTTP。");
+  const allowsHttp =
+    isLoopbackHost(host) || (import.meta.env.DEV && isPrivateIpAddress(host));
+  if (base.protocol !== "https:" && !(base.protocol === "http:" && allowsHttp)) {
+    throw new Error("API 地址必须使用 HTTPS，本地开发仅允许 localhost/127.0.0.1 或私有 IP HTTP。");
   }
   base.pathname = base.pathname.replace(/\/+$/, "");
   base.search = "";
@@ -54,6 +71,7 @@ export interface LearningSession {
   nodes: KnowledgeNode[];
   active_node_id: string;
   persona: Persona;
+  tutor_settings: TutorSettings;
   messages: Message[];
   active_messages: Message[];
   message_counts: Record<string, number>;
@@ -274,6 +292,10 @@ export function getMe() {
   return request<User>("/api/me");
 }
 
+export function getSpeechCapabilities() {
+  return request<SpeechCapabilities>("/api/speech/capabilities");
+}
+
 export function logout() {
   return request<{ ok: boolean }>(
     "/api/auth/logout",
@@ -362,6 +384,16 @@ export function updateSessionPersona(sessionId: string, persona: Persona) {
     {
       method: "POST",
       body: JSON.stringify({ persona }),
+    },
+  );
+}
+
+export function updateSessionTutorSettings(sessionId: string, settings: TutorSettings) {
+  return request<LearningSession>(
+    `/api/sessions/${sessionId}/tutor-settings`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(settings),
     },
   );
 }
@@ -490,6 +522,50 @@ export function submitFeynman(sessionId: string, nodeId: string, answers: Feynma
       }),
     },
   );
+}
+
+export async function transcribeSpeech(audio: Blob, options: { language?: string; prompt?: string } = {}) {
+  const formData = new FormData();
+  formData.append("file", audio, audio.type.includes("mp4") ? "recording.m4a" : "recording.webm");
+  if (options.language) {
+    formData.append("language", options.language);
+  }
+  if (options.prompt) {
+    formData.append("prompt", options.prompt);
+  }
+  return request<SpeechTranscription>(
+    "/api/speech/asr/transcribe",
+    {
+      method: "POST",
+      body: formData,
+    },
+  );
+}
+
+export async function synthesizeSpeech(text: string, options: { voice?: string; language?: string } = {}) {
+  const response = await fetch(`${API_BASE}/api/speech/tts`, {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      ...csrfHeaderFor("POST"),
+    },
+    body: JSON.stringify({
+      text,
+      voice: options.voice,
+      language: options.language,
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+
+  const blob = await response.blob();
+  return {
+    blob,
+    contentType: response.headers.get("content-type") || blob.type || "audio/wav",
+  };
 }
 
 export async function streamChatMessageV2(

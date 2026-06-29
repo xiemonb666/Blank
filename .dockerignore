@@ -1,0 +1,55 @@
+# Git 与编辑器
+.git
+.gitignore
+.gitattributes
+.idea
+.vscode
+*.swp
+*.swo
+
+# 前端构建产物与依赖（后端镜像不需要）
+pwa/node_modules
+pwa/dist
+pwa/.vite
+
+# Python 虚拟环境与缓存
+backend/.venv
+backend/__pycache__
+backend/**/__pycache__
+backend/**/*.pyc
+backend/**/*.pyo
+backend/.pytest_cache
+backend/.mypy_cache
+backend/.ruff_cache
+backend/htmlcov
+backend/.coverage
+
+# 数据与日志（由容器运行时挂载或生成）
+backend/data/
+
+# 测试文件（生产镜像不需要，开发测试请用 Dockerfile.test + compose.test.yaml）
+backend/test_*.py
+backend/tests
+
+# 部署与脚本（镜像内不需要）
+deploy
+scripts
+*.md
+!README.md
+
+# 环境变量与密钥
+.env
+.env.*
+!.env.example
+
+# Docker 自身
+docker-compose*
+compose*.yaml
+Dockerfile*
+.dockerignore
+
+# 其他
+*.ps1
+*.sh
+LICENSE
+Plan.md

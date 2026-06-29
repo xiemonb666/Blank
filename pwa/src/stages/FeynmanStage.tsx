@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowRight, Mic, Square } from "lucide-react";
+import { ArrowRight, Mic, Square, Volume2 } from "lucide-react";
 import { stageLabelText } from "../app/sessionState";
 import type { FeynmanQuestion, KnowledgeNode } from "../types";
 
@@ -14,6 +14,11 @@ interface FeynmanStageProps {
   onReload: () => void;
   onComplete: () => void;
   isBusy: boolean;
+  asrEnabled: boolean;
+  ttsEnabled: boolean;
+  isSpeaking: boolean;
+  onSpeakText: (text: string) => void;
+  onTranscribeAudio: (audio: Blob) => Promise<string>;
 }
 
 export function FeynmanStage({
@@ -27,6 +32,11 @@ export function FeynmanStage({
   onReload,
   onComplete,
   isBusy,
+  asrEnabled,
+  ttsEnabled,
+  isSpeaking,
+  onSpeakText,
+  onTranscribeAudio,
 }: FeynmanStageProps) {
   const current = questions[currentIndex] ?? null;
   const answeredCount = questions.filter((question) => (answers[question.id] ?? "").trim()).length;
@@ -74,17 +84,36 @@ export function FeynmanStage({
         {current ? (
           <>
             <div className="question-card">
-              <span>{current.follow_up_of ? "动态追问" : `导师提问 ${currentIndex + 1}`} · {stageLabelText(current.stage)}</span>
+              <div className="question-card-topline">
+                <span>{current.follow_up_of ? "动态追问" : `导师提问 ${currentIndex + 1}`} · {stageLabelText(current.stage)}</span>
+                {ttsEnabled && (
+                  <button
+                    className="secondary-button compact voice-inline-button"
+                    type="button"
+                    onClick={() => onSpeakText(`${current.question}\n${current.focus}`)}
+                    disabled={isBusy || isSpeaking}
+                  >
+                    <Volume2 size={14} />
+                    <small>{isSpeaking ? "播报中" : "朗读题目"}</small>
+                  </button>
+                )}
+              </div>
               <h3>{current.question}</h3>
               <p>{current.focus}</p>
             </div>
 
             <div className="answer-studio">
-              <RecorderStudio disabled={isBusy} />
+              <RecorderStudio
+                disabled={isBusy}
+                asrEnabled={asrEnabled}
+                value={answers[current.id] ?? ""}
+                onChange={onAnswerChange}
+                onTranscribeAudio={onTranscribeAudio}
+              />
               <textarea
                 value={answers[current.id] ?? ""}
                 onChange={(event) => onAnswerChange(event.target.value)}
-                placeholder="讲完后把关键句写在这里；当前版本不会自动转写语音。"
+                placeholder={asrEnabled ? "可以直接讲出来，转写后请确认并补充关键句。" : "讲完后把关键句写在这里；当前环境尚未启用自动转写。"}
                 disabled={isBusy}
               />
             </div>
@@ -129,22 +158,50 @@ export function FeynmanStage({
   );
 }
 
-function RecorderStudio({ disabled }: { disabled: boolean }) {
+function RecorderStudio({
+  disabled,
+  asrEnabled,
+  value,
+  onChange,
+  onTranscribeAudio,
+}: {
+  disabled: boolean;
+  asrEnabled: boolean;
+  value: string;
+  onChange: (value: string) => void;
+  onTranscribeAudio: (audio: Blob) => Promise<string>;
+}) {
   const [isRecording, setIsRecording] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
   const [durationMs, setDurationMs] = useState(0);
   const [levels, setLevels] = useState<number[]>(() => Array.from({ length: 28 }, () => 6));
-  const [status, setStatus] = useState("麦克风只用于本地音量反馈，不会上传音频。");
+  const [status, setStatus] = useState(
+    asrEnabled
+      ? "录音结束后会调用 SenseVoice 转写；默认不长期保存音频，只写入你确认后的文本。"
+      : "当前环境未启用 ASR，麦克风仅用于本地音量反馈。",
+  );
   const streamRef = useRef<MediaStream | null>(null);
   const contextRef = useRef<AudioContext | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
   const animationRef = useRef<number | null>(null);
   const startRef = useRef(0);
 
   useEffect(() => {
-    return () => stopRecording("录音已停止。");
+    return () => stopRecording("录音已停止。", false);
   }, []);
 
+  useEffect(() => {
+    if (isRecording || isTranscribing) return;
+    setStatus(
+      asrEnabled
+        ? "录音结束后会调用 SenseVoice 转写；默认不长期保存音频，只写入你确认后的文本。"
+        : "当前环境未启用 ASR，麦克风仅用于本地音量反馈。",
+    );
+  }, [asrEnabled, isRecording, isTranscribing]);
+
   async function startRecording() {
-    if (disabled || isRecording) return;
+    if (disabled || isRecording || isTranscribing) return;
     if (!navigator.mediaDevices?.getUserMedia) {
       setStatus("当前浏览器不支持麦克风录音，请继续使用文本回答。");
       return;
@@ -157,8 +214,31 @@ function RecorderStudio({ disabled }: { disabled: boolean }) {
       const source = audioContext.createMediaStreamSource(stream);
       source.connect(analyser);
       const data = new Uint8Array(analyser.frequencyBinCount);
+      const preferredMimeType = resolveRecorderMimeType();
+      const recorder = preferredMimeType ? new MediaRecorder(stream, { mimeType: preferredMimeType }) : new MediaRecorder(stream);
+      chunksRef.current = [];
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          chunksRef.current.push(event.data);
+        }
+      };
+      recorder.onstop = () => {
+        const blob = new Blob(chunksRef.current, { type: recorder.mimeType || preferredMimeType || "audio/webm" });
+        chunksRef.current = [];
+        if (!blob.size) {
+          setStatus("没有录到有效音频，请重试或直接使用文本回答。");
+          return;
+        }
+        if (!asrEnabled) {
+          setStatus("录音已停止。当前环境未启用自动转写，请把关键句写入文本框后继续。");
+          return;
+        }
+        void transcribeBlob(blob);
+      };
+      recorder.start();
       streamRef.current = stream;
       contextRef.current = audioContext;
+      mediaRecorderRef.current = recorder;
       startRef.current = performance.now();
       setIsRecording(true);
       setStatus("正在听取麦克风输入，请像给同学讲解一样作答。");
@@ -187,17 +267,45 @@ function RecorderStudio({ disabled }: { disabled: boolean }) {
     }
   }
 
-  function stopRecording(nextStatus = "录音已停止，请把关键句写入文本框后继续。") {
+  async function transcribeBlob(blob: Blob) {
+    setIsTranscribing(true);
+    setStatus("录音已结束，正在用 SenseVoice 转写，请稍候。");
+    try {
+      const transcript = (await onTranscribeAudio(blob)).trim();
+      if (!transcript) {
+        throw new Error("没有识别出可用文本，请再讲慢一点，或改用键盘输入。");
+      }
+      const nextValue = value.trim() ? `${value.trim()}\n${transcript}` : transcript;
+      onChange(nextValue);
+      setStatus("转写已写入文本框。请先确认和修改，再继续下一题。");
+    } catch (caught) {
+      setStatus(caught instanceof Error ? caught.message : "转写失败，请直接使用文本回答。");
+    } finally {
+      setIsTranscribing(false);
+    }
+  }
+
+  function stopRecording(nextStatus = "录音已停止，请把关键句写入文本框后继续。", shouldTranscribe = true) {
     if (animationRef.current !== null) {
       window.cancelAnimationFrame(animationRef.current);
       animationRef.current = null;
+    }
+    const recorder = mediaRecorderRef.current;
+    mediaRecorderRef.current = null;
+    if (recorder && recorder.state !== "inactive") {
+      recorder.stop();
     }
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
     void contextRef.current?.close();
     contextRef.current = null;
     setIsRecording(false);
-    setStatus(nextStatus);
+    if (!shouldTranscribe) {
+      chunksRef.current = [];
+      setStatus(nextStatus);
+    } else if (!asrEnabled) {
+      setStatus("录音已停止。当前环境未启用自动转写，请把关键句写入文本框后继续。");
+    }
   }
 
   const seconds = Math.floor(durationMs / 1000);
@@ -210,10 +318,10 @@ function RecorderStudio({ disabled }: { disabled: boolean }) {
           className="record-button"
           type="button"
           onClick={isRecording ? () => stopRecording() : startRecording}
-          disabled={disabled}
+          disabled={disabled || isTranscribing}
         >
           {isRecording ? <Square size={16} /> : <Mic size={16} />}
-          <span>{isRecording ? "停止" : "讲出来"}</span>
+          <span>{isTranscribing ? "转写中" : isRecording ? "停止" : "讲出来"}</span>
         </button>
         <strong>{timeLabel}</strong>
       </div>
@@ -225,4 +333,12 @@ function RecorderStudio({ disabled }: { disabled: boolean }) {
       <p>{status}</p>
     </section>
   );
+}
+
+function resolveRecorderMimeType() {
+  if (typeof MediaRecorder === "undefined" || typeof MediaRecorder.isTypeSupported !== "function") {
+    return "";
+  }
+  const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
+  return candidates.find((item) => MediaRecorder.isTypeSupported(item)) ?? "";
 }

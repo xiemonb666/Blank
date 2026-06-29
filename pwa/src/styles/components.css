@@ -735,6 +735,10 @@
   gap: 8px;
 }
 
+.persona-switcher.compact {
+  grid-template-columns: repeat(auto-fit, minmax(64px, 1fr));
+}
+
 .persona-switcher button {
   min-height: 38px;
   padding: 0 8px;
@@ -751,6 +755,25 @@
   margin: 10px 0 0;
   font-size: var(--text-xs);
   line-height: var(--leading-copy);
+}
+
+.tutor-depth-control,
+.tutor-segment {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.tutor-depth-control span,
+.tutor-segment > span {
+  font-size: var(--text-xs);
+  font-weight: 900;
+  color: var(--muted);
+}
+
+.tutor-depth-control input {
+  width: 100%;
+  accent-color: var(--ink);
 }
 
 .downgrade-box {

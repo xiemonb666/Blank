@@ -127,7 +127,7 @@ def security_headers() -> dict[str, str]:
         "X-Frame-Options": "DENY",
         "X-Permitted-Cross-Domain-Policies": "none",
         "Referrer-Policy": "no-referrer",
-        "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=()",
+        "Permissions-Policy": "camera=(), microphone=(self), geolocation=(), payment=()",
         "Content-Security-Policy": (
             "default-src 'none'; "
             "base-uri 'none'; "

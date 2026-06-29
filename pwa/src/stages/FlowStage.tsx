@@ -1,12 +1,12 @@
 import { FormEvent, useEffect, useRef } from "react";
-import { ArrowRight, Gauge, Send } from "lucide-react";
-import { personas } from "../app/constants";
+import { ArrowRight, Gauge, Send, Volume2 } from "lucide-react";
+import { communicationTypes, learningStyles, personas } from "../app/constants";
 import { stageLabelText, statusLabel } from "../app/sessionState";
 import { AgentWorkflowPanel } from "../components/AgentWorkflowPanel";
 import { RichText } from "../components/RichText";
 import { ThoughtProcess } from "../components/ThoughtProcess";
 import type { AgentWorkflowEvent } from "../hooks/useV2Chat";
-import type { KnowledgeNode, Message, NodeLearningProfile, Persona } from "../types";
+import type { KnowledgeNode, Message, NodeLearningProfile, Persona, TutorCommunicationType, TutorLearningStyle, TutorSettings } from "../types";
 
 interface FlowStageProps {
   activeNode: KnowledgeNode;
@@ -16,7 +16,9 @@ interface FlowStageProps {
   nodeMessageCounts: Record<string, number>;
   profile: NodeLearningProfile | null;
   persona: Persona;
+  tutorSettings: TutorSettings;
   onPersonaChange: (persona: Persona) => void;
+  onTutorSettingsChange: (settings: TutorSettings) => void;
   onDraftChange: (value: string) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onSend: () => void;
@@ -30,6 +32,9 @@ interface FlowStageProps {
   agentEvents?: AgentWorkflowEvent[];
   isAgentStreaming?: boolean;
   thoughts?: string[];
+  ttsEnabled: boolean;
+  isSpeaking: boolean;
+  onSpeakText: (text: string) => void;
 }
 
 export function FlowStage({
@@ -40,7 +45,9 @@ export function FlowStage({
   nodeMessageCounts,
   profile,
   persona,
+  tutorSettings,
   onPersonaChange,
+  onTutorSettingsChange,
   onDraftChange,
   onSubmit,
   onSend,
@@ -54,6 +61,9 @@ export function FlowStage({
   agentEvents = [],
   isAgentStreaming,
   thoughts,
+  ttsEnabled,
+  isSpeaking,
+  onSpeakText,
 }: FlowStageProps) {
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const messageEndRef = useRef<HTMLDivElement | null>(null);
@@ -123,6 +133,42 @@ export function FlowStage({
           </div>
           <p>{personas[persona].caption}</p>
         </div>
+        <div className="persona-box learning-persona">
+          <div className="box-title">
+            <Gauge size={18} />
+            <span>导师参数</span>
+          </div>
+          <label className="tutor-depth-control">
+            <span>知识深度 L{tutorSettings.depth_level}</span>
+            <input
+              type="range"
+              min={1}
+              max={10}
+              value={tutorSettings.depth_level}
+              onChange={(event) =>
+                onTutorSettingsChange({
+                  ...tutorSettings,
+                  depth_level: Number(event.target.value),
+                })
+              }
+              disabled={isBusy}
+            />
+          </label>
+          <SegmentedTutorControl<TutorLearningStyle>
+            label="学习风格"
+            value={tutorSettings.learning_style}
+            options={learningStyles}
+            disabled={isBusy}
+            onChange={(learning_style) => onTutorSettingsChange({ ...tutorSettings, learning_style })}
+          />
+          <SegmentedTutorControl<TutorCommunicationType>
+            label="沟通类型"
+            value={tutorSettings.communication_type}
+            options={communicationTypes}
+            disabled={isBusy}
+            onChange={(communication_type) => onTutorSettingsChange({ ...tutorSettings, communication_type })}
+          />
+        </div>
       </aside>
 
       <section className="chat-panel">
@@ -166,19 +212,35 @@ export function FlowStage({
           <div className="message-list" ref={messageListRef}>
             {v2Enabled && thoughts && thoughts.length > 0 && <ThoughtProcess thoughts={thoughts} />}
             {messages.length > 0 ? (
-              messages.map((message, index) => (
-                <div
-                  key={`${message.node_id ?? activeNode.id}-${message.created_at ?? index}-${message.role}`}
-                  className={`message ${message.role}`}
-                >
-                  <div className="message-kicker">
-                    <span>{message.role === "mentor" ? "AI 导师" : "学习者"}</span>
-                    <b>{stageTitle}</b>
+              messages.map((message, index) => {
+                const canSpeak = ttsEnabled && message.role === "mentor" && Boolean(message.text.trim());
+                return (
+                  <div
+                    key={`${message.node_id ?? activeNode.id}-${message.created_at ?? index}-${message.role}`}
+                    className={`message ${message.role}`}
+                  >
+                    <div className="message-kicker">
+                      <span>{message.role === "mentor" ? "AI 导师" : "学习者"}</span>
+                      <div className="message-kicker-actions">
+                        {canSpeak && (
+                          <button
+                            className="secondary-button compact voice-inline-button"
+                            type="button"
+                            onClick={() => onSpeakText(message.text)}
+                            disabled={isBusy || isSpeaking}
+                          >
+                            <Volume2 size={14} />
+                            <small>{isSpeaking ? "播报中" : "朗读"}</small>
+                          </button>
+                        )}
+                        <b>{stageTitle}</b>
+                      </div>
+                    </div>
+                    {message.thinking && <ThinkingBlock text={message.thinking} />}
+                    <RichText text={message.text} />
                   </div>
-                  {message.thinking && <ThinkingBlock text={message.thinking} />}
-                  <RichText text={message.text} />
-                </div>
-              ))
+                );
+              })
             ) : (
               <div className="message-empty">AI 导师正在准备第一个问题。</div>
             )}
@@ -214,6 +276,40 @@ export function FlowStage({
           </button>
         </div>
       </section>
+    </div>
+  );
+}
+
+function SegmentedTutorControl<T extends string>({
+  label,
+  value,
+  options,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  value: T;
+  options: Record<T, { label: string; caption: string }>;
+  disabled: boolean;
+  onChange: (value: T) => void;
+}) {
+  return (
+    <div className="tutor-segment">
+      <span>{label}</span>
+      <div className="persona-switcher compact" role="tablist" aria-label={label}>
+        {(Object.keys(options) as T[]).map((key) => (
+          <button
+            key={key}
+            type="button"
+            className={value === key ? "active" : ""}
+            onClick={() => onChange(key)}
+            disabled={disabled}
+            title={options[key].caption}
+          >
+            {options[key].label}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }

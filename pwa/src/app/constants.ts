@@ -1,4 +1,4 @@
-import type { Persona } from "../types";
+import type { Persona, TutorCommunicationType, TutorLearningStyle } from "../types";
 
 export const personas: Record<
   Persona,
@@ -29,3 +29,16 @@ export const PARSE_JOB_STORAGE_KEY = "blank_parse_job_id";
 export const AUTH_SESSION_STORAGE_KEY = "blank_auth_session";
 export const LEGACY_TOKEN_STORAGE_KEY = "blank_token";
 export const CHAT_SUBMIT_COOLDOWN_MS = 1500;
+
+export const learningStyles: Record<TutorLearningStyle, { label: string; caption: string }> = {
+  active: { label: "主动", caption: "判断、举例、纠错" },
+  visual: { label: "视觉", caption: "结构、流程、画面" },
+  verbal: { label: "言语", caption: "定义、对比、边界" },
+};
+
+export const communicationTypes: Record<TutorCommunicationType, { label: string; caption: string }> = {
+  socratic: { label: "苏格拉底", caption: "短讲解后追问" },
+  story: { label: "讲故事", caption: "场景化解释" },
+  textbook: { label: "教科书", caption: "定义到边界" },
+  coach: { label: "教练", caption: "标准与练习" },
+};

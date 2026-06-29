@@ -6,10 +6,12 @@ import type {
   Message,
   NodeLearningProfile,
   Persona,
+  TutorSettings,
 } from "../types";
 
 interface UseLearningSessionOptions {
   initialPersona: Persona;
+  initialTutorSettings?: TutorSettings;
   initialSessionId: string | null;
   initialMaterialTitle: string;
   initialNodes: KnowledgeNode[];
@@ -23,6 +25,7 @@ interface UseLearningSessionOptions {
 
 function useLearningSession({
   initialPersona,
+  initialTutorSettings = { depth_level: 5, learning_style: "active", communication_type: "socratic" },
   initialSessionId,
   initialMaterialTitle,
   initialNodes,
@@ -34,6 +37,7 @@ function useLearningSession({
   initialNodeProfiles,
 }: UseLearningSessionOptions) {
   const [persona, setPersona] = useState<Persona>(initialPersona);
+  const [tutorSettings, setTutorSettings] = useState<TutorSettings>(initialTutorSettings);
   const [sessionId, setSessionId] = useState<string | null>(initialSessionId);
   const [materialTitle, setMaterialTitle] = useState(initialMaterialTitle);
   const [nodes, setNodes] = useState<KnowledgeNode[]>(initialNodes);
@@ -60,6 +64,8 @@ function useLearningSession({
   return {
     persona,
     setPersona,
+    tutorSettings,
+    setTutorSettings,
     sessionId,
     setSessionId,
     materialTitle,
