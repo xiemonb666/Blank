@@ -1,0 +1,112 @@
+name: blank-learning-all-in-one
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: blank-all-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: blank
+      POSTGRES_PASSWORD: ${BLANK_POSTGRES_PASSWORD:-blank}
+      POSTGRES_DB: blank
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - blank-all-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U blank -d blank"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - blank-all
+
+  redis:
+    image: redis:7-alpine
+    container_name: blank-all-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - blank-all-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - blank-all
+
+  neo4j:
+    image: neo4j:5.26-community
+    container_name: blank-all-neo4j
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: ${BLANK_NEO4J_AUTH:-neo4j/change-this-password}
+      NEO4J_server_memory_heap_initial__size: 512m
+      NEO4J_server_memory_heap_max__size: 1G
+      NEO4J_server_memory_pagecache_size: 512m
+    ports:
+      - "127.0.0.1:7474:7474"
+      - "127.0.0.1:7687:7687"
+    volumes:
+      - blank-all-neo4j-data:/data
+      - blank-all-neo4j-logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    networks:
+      - blank-all
+
+  app:
+    image: blank-learning/all-in-one:local
+    build:
+      context: .
+      dockerfile: docker/all-in-one.Dockerfile
+    container_name: blank-all-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    ports:
+      - "${BLANK_APP_BIND:-127.0.0.1}:8080:8080"
+    environment:
+      BLANK_ENV: ${BLANK_ENV:-development}
+      BLANK_SECRET_KEY: ${BLANK_SECRET_KEY:-change-this-to-at-least-32-random-characters}
+      BLANK_ADMIN_BOOTSTRAP_KEY: ${BLANK_ADMIN_BOOTSTRAP_KEY:-change-this-before-first-admin}
+      BLANK_ALLOWED_HOSTS: ${BLANK_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      BLANK_CORS_ORIGINS: ${BLANK_CORS_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080}
+      BLANK_DATABASE_URL: ${BLANK_DATABASE_URL:-postgresql://blank:${BLANK_POSTGRES_PASSWORD:-blank}@postgres:5432/blank}
+      BLANK_REDIS_URL: ${BLANK_REDIS_URL:-redis://redis:6379/0}
+      BLANK_NEO4J_URI: ${BLANK_NEO4J_URI:-bolt://neo4j:7687}
+      BLANK_NEO4J_USER: ${BLANK_NEO4J_USER:-neo4j}
+      BLANK_NEO4J_PASSWORD: ${BLANK_NEO4J_PASSWORD:-change-this-password}
+      BLANK_GRAPHRAG_ENABLED: ${BLANK_GRAPHRAG_ENABLED:-true}
+      BLANK_MAX_REQUEST_BYTES: ${BLANK_MAX_REQUEST_BYTES:-1048576}
+      BLANK_ALLOW_PRIVATE_MODEL_URLS: ${BLANK_ALLOW_PRIVATE_MODEL_URLS:-false}
+      BLANK_ALLOW_PUBLIC_REGISTRATION: ${BLANK_ALLOW_PUBLIC_REGISTRATION:-false}
+      BLANK_TRUST_PROXY_HEADERS: ${BLANK_TRUST_PROXY_HEADERS:-false}
+      BLANK_DEBUG_LOG_ENABLED: ${BLANK_DEBUG_LOG_ENABLED:-true}
+      BLANK_DEBUG_LOG_PATH: ${BLANK_DEBUG_LOG_PATH:-/app/backend/data/debug.log}
+    volumes:
+      - blank-all-backend-data:/app/backend/data
+    networks:
+      - blank-all
+
+volumes:
+  blank-all-postgres-data:
+  blank-all-redis-data:
+  blank-all-neo4j-data:
+  blank-all-neo4j-logs:
+  blank-all-backend-data:
+
+networks:
+  blank-all:
+    driver: bridge

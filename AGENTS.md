@@ -62,11 +62,12 @@ Blank 是一个教育学习闭环 MVP，核心流程为：**输入 -> 拆解 -> 
 │   └── package.json
 ├── scripts/                 # 开发、测试、部署、安全审计脚本（bash）
 ├── deploy/                  # 生产部署模板（systemd、nginx、fail2ban、logrotate）
+├── docker/                  # 生产应用镜像定义（backend/frontend/all-in-one）与 nginx 配置
 ├── start.sh                 # 一键启动脚本（自动装依赖、启动前后端）
-├── Dockerfile               # 后端生产/开发 Docker 镜像
 ├── Dockerfile.test          # 后端测试 Docker 镜像
 ├── compose.yaml             # 基础设施编排（PostgreSQL + Redis + Neo4j）
-├── compose.full.yaml        # 一体化编排（后端 + PostgreSQL + Redis + Neo4j）
+├── compose.separated.yaml   # 前后端分离应用镜像 + 基础设施编排
+├── compose.all-in-one.yaml  # 前后端合并应用镜像 + 基础设施编排
 ├── compose.test.yaml        # 一体化测试编排
 ├── environment.yml          # Conda 环境定义（Python 3.13 + Node 22）
 ├── .dockerignore            # Docker 构建上下文排除规则
@@ -121,27 +122,51 @@ npm run build
 # 产物输出到 pwa/dist/
 ```
 
-### Docker 完整环境启动（后端 + PostgreSQL + Redis + Neo4j）
+### Docker 镜像构建与启动
 
-项目已提供生产/开发通用的后端镜像 `Dockerfile` 与一体化编排 `compose.full.yaml`，适合不想在本地安装 Python/Conda 依赖的场景：
+项目提供两类应用镜像：
+- 前后端分离：`docker/backend.Dockerfile` 生成 `blank-learning/backend:local`，`docker/frontend.Dockerfile` 生成 `blank-learning/frontend:local`
+- 前后端合并：`docker/all-in-one.Dockerfile` 生成 `blank-learning/all-in-one:local`，镜像内包含前端静态资源、FastAPI 后端和 nginx，同源代理 `/api`
+
+构建全部应用镜像并导出到本地 `dist/docker-images/`：
 
 ```bash
-# 启动完整环境（自动构建后端镜像）
-./scripts/start-in-docker.sh
+./scripts/build-docker-images.sh
+```
 
-# 强制重新构建后端镜像
-./scripts/start-in-docker.sh --build
+默认导出产物：
+- `dist/docker-images/blank-backend-local.tar`
+- `dist/docker-images/blank-frontend-local.tar`
+- `dist/docker-images/blank-all-in-one-local.tar`
 
-# 查看后端日志
-./scripts/start-in-docker.sh --logs
+使用合并镜像启动完整开发环境：
+
+```bash
+# 启动合并镜像 + PostgreSQL + Redis + Neo4j
+./scripts/start-in-docker.sh --all-in-one --build
+
+# 查看应用日志
+./scripts/start-in-docker.sh --all-in-one --logs
 
 # 停止并清理所有容器与数据卷
-./scripts/start-in-docker.sh --down
+./scripts/start-in-docker.sh --all-in-one --down
+```
+
+使用分离镜像启动完整开发环境：
+
+```bash
+# 启动前端镜像、后端镜像与基础设施
+./scripts/start-in-docker.sh --separated --build
+
+# 停止并清理所有容器与数据卷
+./scripts/start-in-docker.sh --separated --down
 ```
 
 启动后会暴露：
-- 后端 API：`http://127.0.0.1:8000`
-- API 文档：`http://127.0.0.1:8000/docs`
+- 合并镜像应用：`http://127.0.0.1:8080`
+- 分离镜像前端：`http://127.0.0.1:8080`
+- 分离镜像后端 API：`http://127.0.0.1:8000`
+- API 文档：合并镜像为 `http://127.0.0.1:8080/docs`，分离镜像为 `http://127.0.0.1:8000/docs`
 - Neo4j Browser：`http://127.0.0.1:7474`
 - PostgreSQL：`127.0.0.1:5432`
 - Redis：`127.0.0.1:6379`
@@ -149,17 +174,18 @@ npm run build
 你也可以直接使用 `docker compose`：
 
 ```bash
-# 启动
-docker compose -f compose.full.yaml up --build -d
+# 启动合并镜像
+docker compose -f compose.all-in-one.yaml up --build -d
 
-# 停止
-docker compose -f compose.full.yaml down
+# 启动分离镜像
+docker compose -f compose.separated.yaml up --build -d
 
 # 停止并清理数据卷
-docker compose -f compose.full.yaml down -v
+docker compose -f compose.all-in-one.yaml down -v
+docker compose -f compose.separated.yaml down -v
 ```
 
-**注意**：`compose.full.yaml` 默认使用开发友好配置。生产部署前必须在 `.env` 中设置强密码并满足生产启动硬门槛。
+**注意**：`compose.all-in-one.yaml` 与 `compose.separated.yaml` 默认使用开发友好配置。生产部署前必须在 `.env` 中设置强密码并满足生产启动硬门槛。
 
 ### 后端测试
 
@@ -348,7 +374,8 @@ python -m pytest backend/test_api.py
 | `./start.sh` | 一键启动前后端开发服务 |
 | `./scripts/infra.sh up` | 启动本地 PostgreSQL、Redis、Neo4j 开发依赖 |
 | `./scripts/dev.sh` | 仅启动开发服务（不自动装依赖） |
-| `./scripts/start-in-docker.sh` | 一键 Docker 启动后端 + PostgreSQL + Redis + Neo4j |
+| `./scripts/build-docker-images.sh` | 构建 backend/frontend/all-in-one 应用镜像并导出 tar |
+| `./scripts/start-in-docker.sh` | 一键 Docker 启动合并镜像或分离镜像环境 |
 | `./scripts/test-in-docker.sh` | Docker 中运行后端测试 |
 | `./scripts/security-audit.sh` | 完整安全审计与构建验证 |
 | `./scripts/test-production-security.sh` | 生产启动配置门禁检查 |

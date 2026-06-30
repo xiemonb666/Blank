@@ -9,7 +9,7 @@ const PROD_STYLE_CSP = "style-src 'self'";
 export default defineConfig(({ command, mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
   const apiBase = env.VITE_API_BASE_URL?.trim() || "http://127.0.0.1:8000";
-  const connectSrc = `${apiBase} http://127.0.0.1:8000 http://localhost:8000`;
+  const connectSrc = buildConnectSrc(apiBase);
 
   return {
     base: "./",
@@ -28,3 +28,16 @@ export default defineConfig(({ command, mode }) => {
     ],
   };
 });
+
+function buildConnectSrc(apiBase: string) {
+  const sources = new Set(["http://127.0.0.1:8000", "http://localhost:8000"]);
+  const trimmed = apiBase.trim();
+  if (trimmed && !trimmed.startsWith("/") && trimmed !== ".") {
+    try {
+      sources.add(new URL(trimmed).origin);
+    } catch {
+      sources.add(trimmed);
+    }
+  }
+  return [...sources].join(" ");
+}

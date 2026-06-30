@@ -8,6 +8,7 @@
 *.swo
 
 # 前端构建产物与依赖（后端镜像不需要）
+dist
 pwa/node_modules
 pwa/dist
 pwa/.vite
@@ -51,5 +52,6 @@ Dockerfile*
 # 其他
 *.ps1
 *.sh
+!docker/**/*.sh
 LICENSE
 Plan.md

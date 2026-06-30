@@ -1,23 +1,9 @@
-name: blank-learning-full
-
-# Blank 后端 + 基础设施一体化编排
-# 包含：FastAPI 后端、PostgreSQL、Redis、Neo4j
-# 用法：
-#   docker compose -f compose.full.yaml up --build -d   # 启动
-#   docker compose -f compose.full.yaml down -v          # 停止并清理数据
-#   docker compose -f compose.full.yaml logs -f backend  # 查看后端日志
-#
-# 注意：本文件默认使用开发友好配置。生产部署前必须：
-#   1. 设置强密码（POSTGRES_PASSWORD、NEO4J_AUTH、BLANK_SECRET_KEY、BLANK_ADMIN_BOOTSTRAP_KEY）
-#   2. 将 BLANK_ENV 改为 production
-#   3. 配置 BLANK_ALLOWED_HOSTS 与 BLANK_CORS_ORIGINS 为实际 HTTPS 域名
-#   4. 关闭公开注册或按需开启
-#   5. 使用外部反向代理（nginx）提供 HTTPS，不要直接把后端暴露在公网
+name: blank-learning-separated
 
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: blank-full-postgres
+    container_name: blank-separated-postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: blank
@@ -26,35 +12,35 @@ services:
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
-      - blank-full-postgres-data:/var/lib/postgresql/data
+      - blank-separated-postgres-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U blank -d blank"]
       interval: 5s
       timeout: 5s
       retries: 20
     networks:
-      - blank-full
+      - blank-separated
 
   redis:
     image: redis:7-alpine
-    container_name: blank-full-redis
+    container_name: blank-separated-redis
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
     ports:
       - "127.0.0.1:6379:6379"
     volumes:
-      - blank-full-redis-data:/data
+      - blank-separated-redis-data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 5s
       retries: 20
     networks:
-      - blank-full
+      - blank-separated
 
   neo4j:
     image: neo4j:5.26-community
-    container_name: blank-full-neo4j
+    container_name: blank-separated-neo4j
     restart: unless-stopped
     environment:
       NEO4J_AUTH: ${BLANK_NEO4J_AUTH:-neo4j/change-this-password}
@@ -65,21 +51,22 @@ services:
       - "127.0.0.1:7474:7474"
       - "127.0.0.1:7687:7687"
     volumes:
-      - blank-full-neo4j-data:/data
-      - blank-full-neo4j-logs:/logs
+      - blank-separated-neo4j-data:/data
+      - blank-separated-neo4j-logs:/logs
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:7474 >/dev/null 2>&1 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 30
     networks:
-      - blank-full
+      - blank-separated
 
   backend:
+    image: blank-learning/backend:local
     build:
       context: .
-      dockerfile: Dockerfile
-    container_name: blank-full-backend
+      dockerfile: docker/backend.Dockerfile
+    container_name: blank-separated-backend
     restart: unless-stopped
     depends_on:
       postgres:
@@ -95,7 +82,7 @@ services:
       BLANK_SECRET_KEY: ${BLANK_SECRET_KEY:-change-this-to-at-least-32-random-characters}
       BLANK_ADMIN_BOOTSTRAP_KEY: ${BLANK_ADMIN_BOOTSTRAP_KEY:-change-this-before-first-admin}
       BLANK_ALLOWED_HOSTS: ${BLANK_ALLOWED_HOSTS:-localhost,127.0.0.1,backend}
-      BLANK_CORS_ORIGINS: ${BLANK_CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      BLANK_CORS_ORIGINS: ${BLANK_CORS_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://127.0.0.1:5173}
       BLANK_DATABASE_URL: ${BLANK_DATABASE_URL:-postgresql://blank:${BLANK_POSTGRES_PASSWORD:-blank}@postgres:5432/blank}
       BLANK_REDIS_URL: ${BLANK_REDIS_URL:-redis://redis:6379/0}
       BLANK_NEO4J_URI: ${BLANK_NEO4J_URI:-bolt://neo4j:7687}
@@ -109,33 +96,34 @@ services:
       BLANK_DEBUG_LOG_ENABLED: ${BLANK_DEBUG_LOG_ENABLED:-true}
       BLANK_DEBUG_LOG_PATH: ${BLANK_DEBUG_LOG_PATH:-/app/backend/data/debug.log}
     volumes:
-      # 持久化后端数据（debug 日志、本地密钥等）
-      - blank-full-backend-data:/app/backend/data
-      # 开发时可选挂载源码，便于热重载（生产请注释掉）
-      # - ./backend:/app/backend:ro
+      - blank-separated-backend-data:/app/backend/data
     networks:
-      - blank-full
-    command:
-      - python
-      - -m
-      - uvicorn
-      - app.main:app
-      - --host
-      - 0.0.0.0
-      - --port
-      - "8000"
-      - --no-server-header
-      # 生产可启用更多 worker：
-      # - --workers
-      # - "2"
+      - blank-separated
+
+  frontend:
+    image: blank-learning/frontend:local
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
+    container_name: blank-separated-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_started
+    ports:
+      - "${BLANK_FRONTEND_BIND:-127.0.0.1}:8080:80"
+    networks:
+      - blank-separated
 
 volumes:
-  blank-full-postgres-data:
-  blank-full-redis-data:
-  blank-full-neo4j-data:
-  blank-full-neo4j-logs:
-  blank-full-backend-data:
+  blank-separated-postgres-data:
+  blank-separated-redis-data:
+  blank-separated-neo4j-data:
+  blank-separated-neo4j-logs:
+  blank-separated-backend-data:
 
 networks:
-  blank-full:
+  blank-separated:
     driver: bridge

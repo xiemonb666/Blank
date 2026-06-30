@@ -15,6 +15,7 @@
 /backend/.venv
 /backend/data
 /backups
+/dist/docker-images
 __pycache__
 .pytest_cache
 tmp-screens
