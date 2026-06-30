@@ -1,3 +1,11 @@
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
 :root {
   color: #111;
   background: #f8f3e8;
@@ -27,6 +35,10 @@
   --ink: #111;
   --paper: #f8f3e8;
   --paper-soft: #fffaf0;
+  --academic-bg: #f8f3e8;
+  --academic-bg-deep: #ece6da;
+  --academic-accent-gold: #d4a373;
+  --academic-border-soft: rgba(17, 17, 17, 0.2);
   --line: #111;
   --muted: #656565;
   --quiet: #dfd4c1;
@@ -35,22 +47,23 @@
 
 * {
   box-sizing: border-box;
-  scrollbar-width: thin;
-  scrollbar-color: var(--ink) transparent;
+  scrollbar-width: none;
 }
 
 body {
   margin: 0;
   min-width: 320px;
-  min-height: 100vh;
+  min-height: 100dvh;
+  height: 100dvh;
+  overflow: hidden;
   background: var(--paper);
   font-size: var(--text-base);
   line-height: var(--leading-ui);
 }
 
 ::-webkit-scrollbar {
-  width: 9px;
-  height: 9px;
+  width: 0;
+  height: 0;
 }
 
 ::-webkit-scrollbar-track {
@@ -78,9 +91,14 @@ button {
 
 .app-shell {
   position: relative;
-  min-height: 100vh;
-  overflow-x: hidden;
-  padding: 12px 18px 14px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 10px;
+  width: 100%;
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+  padding: 8px 18px 12px;
 }
 
 .background-grid {
@@ -100,7 +118,8 @@ button {
   justify-content: space-between;
   gap: 20px;
   width: 100%;
-  margin: 0 auto 10px;
+  min-height: 0;
+  margin: 0 auto;
   border: 1.5px solid var(--line);
   background: rgba(248, 243, 232, 0.9);
   backdrop-filter: blur(18px);

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowRight, Mic, Square, Volume2 } from "lucide-react";
 import { stageLabelText } from "../app/sessionState";
+import { PagedList } from "../components/DesignPrimitives";
 import type { FeynmanQuestion, KnowledgeNode } from "../types";
 
 interface FeynmanStageProps {
@@ -56,21 +57,27 @@ export function FeynmanStage({
               {isBusy ? "正在生成问题" : "生成验证问题"}
             </button>
           ) : (
-            questions.map((question, index) => (
-              <button
-                key={question.id}
-                type="button"
-                className={`question-capsule ${index === currentIndex ? "active" : ""} ${
-                  (answers[question.id] ?? "").trim() ? "answered" : ""
-                }`}
-                onClick={() => onMove(index - currentIndex)}
-                disabled={isBusy}
-                title={`${question.label}：${stageLabelText(question.stage)}`}
-              >
-                <span>{index + 1}</span>
-                <small>{question.follow_up_of ? "追问" : stageLabelText(question.stage)}</small>
-              </button>
-            ))
+            <PagedList
+              items={questions}
+              pageSize={4}
+              ariaLabel="费曼问题"
+              className="question-pager"
+              renderItem={(question, index) => (
+                <button
+                  key={question.id}
+                  type="button"
+                  className={`question-capsule ${index === currentIndex ? "active" : ""} ${
+                    (answers[question.id] ?? "").trim() ? "answered" : ""
+                  }`}
+                  onClick={() => onMove(index - currentIndex)}
+                  disabled={isBusy}
+                  title={`${question.label}：${stageLabelText(question.stage)}`}
+                >
+                  <span>{index + 1}</span>
+                  <small>{question.follow_up_of ? "追问" : stageLabelText(question.stage)}</small>
+                </button>
+              )}
+            />
           )}
         </div>
         <div className="feynman-progress">

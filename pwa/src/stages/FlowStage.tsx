@@ -3,6 +3,7 @@ import { ArrowRight, Gauge, Send, Volume2 } from "lucide-react";
 import { communicationTypes, learningStyles, personas } from "../app/constants";
 import { stageLabelText, statusLabel } from "../app/sessionState";
 import { AgentWorkflowPanel } from "../components/AgentWorkflowPanel";
+import { PagedList, SegmentedControl } from "../components/DesignPrimitives";
 import { RichText } from "../components/RichText";
 import { ThoughtProcess } from "../components/ThoughtProcess";
 import type { AgentWorkflowEvent } from "../hooks/useV2Chat";
@@ -73,6 +74,7 @@ export function FlowStage({
   const stageOrder = ["warmup", "mechanism", "transfer", "correction", "recap"] as const;
   const currentStageIndex = profile ? Math.max(0, stageOrder.indexOf(profile.stage)) : 0;
   const latestMessage = messages.length > 0 ? messages[messages.length - 1] : null;
+  const visibleMessages = messages.slice(-3);
   const latestThought = thoughts && thoughts.length > 0 ? thoughts[thoughts.length - 1] : "";
   const scrollSignal = [
     activeNode.id,
@@ -119,18 +121,14 @@ export function FlowStage({
             <Gauge size={18} />
             <span>风格调音台</span>
           </div>
-          <div className="persona-switcher" role="tablist" aria-label="教学风格">
-            {(Object.keys(personas) as Persona[]).map((key) => (
-              <button
-                key={key}
-                type="button"
-                className={persona === key ? "active" : ""}
-                onClick={() => onPersonaChange(key)}
-              >
-                {personas[key].label}
-              </button>
-            ))}
-          </div>
+          <SegmentedControl
+            label="教学风格"
+            value={persona}
+            options={personas}
+            disabled={isBusy}
+            className="persona-switcher"
+            onChange={onPersonaChange}
+          />
           <p>{personas[persona].caption}</p>
         </div>
         <div className="persona-box learning-persona">
@@ -212,11 +210,11 @@ export function FlowStage({
           <div className="message-list" ref={messageListRef}>
             {v2Enabled && thoughts && thoughts.length > 0 && <ThoughtProcess thoughts={thoughts} />}
             {messages.length > 0 ? (
-              messages.map((message, index) => {
+              visibleMessages.map((message, index) => {
                 const canSpeak = ttsEnabled && message.role === "mentor" && Boolean(message.text.trim());
                 return (
                   <div
-                    key={`${message.node_id ?? activeNode.id}-${message.created_at ?? index}-${message.role}`}
+                    key={`${message.node_id ?? activeNode.id}-${message.created_at ?? index}-${message.role}-${messages.length}`}
                     className={`message ${message.role}`}
                   >
                     <div className="message-kicker">
@@ -296,20 +294,14 @@ function SegmentedTutorControl<T extends string>({
   return (
     <div className="tutor-segment">
       <span>{label}</span>
-      <div className="persona-switcher compact" role="tablist" aria-label={label}>
-        {(Object.keys(options) as T[]).map((key) => (
-          <button
-            key={key}
-            type="button"
-            className={value === key ? "active" : ""}
-            onClick={() => onChange(key)}
-            disabled={disabled}
-            title={options[key].caption}
-          >
-            {options[key].label}
-          </button>
-        ))}
-      </div>
+      <SegmentedControl
+        label={label}
+        value={value}
+        options={options}
+        disabled={disabled}
+        className="persona-switcher compact"
+        onChange={onChange}
+      />
     </div>
   );
 }
@@ -338,8 +330,12 @@ function NodeCardStack({
         <p className="eyebrow">Node List</p>
         <strong>{activeNode.title}</strong>
       </div>
-      <div className="node-strip-list">
-        {cards.map((node) => (
+      <PagedList
+        items={cards}
+        pageSize={3}
+        ariaLabel="知识点列表"
+        className="node-strip-pager"
+        renderItem={(node) => (
           <button
             type="button"
             key={node.id}
@@ -361,8 +357,8 @@ function NodeCardStack({
               <small>{messageCounts[node.id] ?? 0} 条</small>
             </span>
           </button>
-        ))}
-      </div>
+        )}
+      />
     </div>
   );
 }

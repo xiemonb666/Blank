@@ -1,4 +1,4 @@
-import { ChangeEvent, DragEvent, FormEvent, useEffect, useRef, useState } from "react";
+import { CSSProperties, ChangeEvent, DragEvent, FormEvent, useEffect, useRef, useState } from "react";
 import { BarChart3, BookOpen, Microscope, MessageSquare, Network, Settings, Sparkles, UploadCloud } from "lucide-react";
 import { useV2Chat } from "./hooks/useV2Chat";
 import { useFeynman } from "./hooks/useFeynman";
@@ -50,6 +50,7 @@ import {
   resolveMessageCounts,
   resolveNodeProfiles,
   stageLabel,
+  statusLabel,
   updateLatestMentorInThread,
 } from "./app/sessionState";
 import {
@@ -1199,6 +1200,103 @@ function App() {
     />
   ) : null;
 
+  const shellLeftPanel = hasSession ? (
+    <div className="knowledge-sidecar">
+      <section className="semantic-topology" aria-label="知识拓扑侧栏预览">
+        <div className="sidecar-heading">
+          <span>Topology</span>
+          <strong>{nodes.length} 个节点</strong>
+        </div>
+        <div className="sidecar-constellation">
+          <svg className="edge-layer" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+            {nodes.flatMap((node) =>
+              node.deps.map((depId) => {
+                const dep = nodes.find((item) => item.id === depId);
+                if (!dep) return null;
+                return (
+                  <line
+                    key={`sidecar-${depId}-${node.id}`}
+                    x1={dep.x}
+                    y1={dep.y}
+                    x2={node.x}
+                    y2={node.y}
+                    className={node.status === "locked" ? "edge locked" : "edge"}
+                  />
+                );
+              }),
+            )}
+          </svg>
+          {nodes.map((node) => (
+            <button
+              key={`sidecar-${node.id}`}
+              type="button"
+              className={`sidecar-node ${node.status} ${node.id === activeNodeId ? "active" : ""}`}
+              style={
+                {
+                  left: `${node.x}%`,
+                  top: `${node.y}%`,
+                  "--node-scale": node.weight,
+                } as CSSProperties
+              }
+              onClick={() => selectNode(node)}
+              disabled={isBusy || node.status === "locked"}
+              aria-label={`选择 ${node.title}`}
+              title={node.title}
+            >
+              <span />
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <section className="sidecar-directory" aria-label="知识节点目录">
+        <div className="sidecar-heading">
+          <span>Outline</span>
+          <strong>{activeNode?.title ?? "未选择节点"}</strong>
+        </div>
+        <div className="sidecar-node-list">
+          {nodes.map((node) => (
+            <button
+              key={`sidecar-row-${node.id}`}
+              className={`sidecar-node-row ${node.status} ${node.id === activeNodeId ? "active" : ""}`}
+              type="button"
+              onClick={() => selectNode(node)}
+              disabled={isBusy || node.status === "locked"}
+            >
+              <span>L{node.complexity}</span>
+              <strong>{node.title}</strong>
+              <small>{statusLabel(node.status)} · {nodeMessageCounts[node.id] ?? 0}</small>
+            </button>
+          ))}
+        </div>
+      </section>
+    </div>
+  ) : null;
+
+  const hasAuxiliaryPanel = Boolean(shellSidePanel) || activeDimensionScores.length > 0;
+  const shellRightPanel = hasAuxiliaryPanel ? (
+    <div className="auxiliary-sidecar">
+      {activeDimensionScores.length > 0 && (
+        <section className="auxiliary-card compact-radar">
+          <div className="sidecar-heading">
+            <span>Feynman</span>
+            <strong>{activeMasteryPassed ? "已通过" : "待巩固"}</strong>
+          </div>
+          <div className="mini-score-list">
+            {activeDimensionScores.map((score) => (
+              <div key={score.stage} className="mini-score-row">
+                <span>{score.label}</span>
+                <strong>{score.value}</strong>
+                <i style={{ "--score": `${Math.max(0, Math.min(100, score.value))}%` } as CSSProperties} />
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+      {shellSidePanel}
+    </div>
+  ) : null;
+
   return (
     <BlankShell
       stage={stage}
@@ -1215,6 +1313,8 @@ function App() {
       isFocusStage={isFocusStage}
       error={error}
       sidePanel={shellSidePanel}
+      leftPanel={shellLeftPanel}
+      rightPanel={shellRightPanel}
     >
       {stage === "canvas" && (
         <CanvasStage

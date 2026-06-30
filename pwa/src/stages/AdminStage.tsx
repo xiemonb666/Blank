@@ -1,6 +1,7 @@
 import { FormEvent } from "react";
 import { ArrowRight } from "lucide-react";
 import type { ApiConfigInput } from "../api";
+import { PagedList } from "../components/DesignPrimitives";
 import { V2ModeToggle } from "../components/V2ModeToggle";
 import type { ApiConfig, User } from "../types";
 
@@ -160,9 +161,13 @@ export function AdminStage({
             </div>
             <b>{apiConfigs.length}</b>
           </div>
-          <div className="admin-list">
-            {apiConfigs.length === 0 && <p className="admin-empty">暂无 API 配置。</p>}
-            {apiConfigs.map((config) => {
+          <PagedList
+            items={apiConfigs}
+            pageSize={2}
+            ariaLabel="API 配置"
+            className="admin-list-pager"
+            empty={<p className="admin-empty">暂无 API 配置。</p>}
+            renderItem={(config) => {
               const providerIsValid = isKnownApiProvider(config.provider);
               return (
                 <div className={`admin-row ${providerIsValid ? "" : "invalid"}`} key={config.id}>
@@ -202,8 +207,8 @@ export function AdminStage({
                   </div>
                 </div>
               );
-            })}
-          </div>
+            }}
+          />
         </section>
 
         <section className="admin-panel admin-list-panel">
@@ -214,9 +219,13 @@ export function AdminStage({
             </div>
             <b>{users.length}</b>
           </div>
-          <div className="admin-list">
-            {users.length === 0 && <p className="admin-empty">暂无用户。</p>}
-            {users.map((item) => (
+          <PagedList
+            items={users}
+            pageSize={2}
+            ariaLabel="用户与权限"
+            className="admin-list-pager"
+            empty={<p className="admin-empty">暂无用户。</p>}
+            renderItem={(item) => (
               <div className="admin-row user-row" key={item.id}>
                 <div>
                   <strong>{item.username}</strong>
@@ -252,8 +261,8 @@ export function AdminStage({
                   </button>
                 </div>
               </div>
-            ))}
-          </div>
+            )}
+          />
         </section>
       </div>
     </div>

@@ -4,6 +4,11 @@ import { spawn } from "node:child_process";
 const baseUrl = process.env.BLANK_UI_REVIEW_URL ?? "http://127.0.0.1:5173";
 const chromeBin = process.env.CHROME_BIN ?? "google-chrome";
 const outputDir = process.env.BLANK_UI_REVIEW_OUT ?? "/tmp/blank-ui-review";
+const viewports = [
+  { name: "desktop", width: 1440, height: 900 },
+  { name: "tablet", width: 1024, height: 768 },
+  { name: "mobile", width: 390, height: 844 },
+];
 
 const commonAccessibilityExpression = `(() => {
   const isVisible = (element) => {
@@ -42,6 +47,7 @@ const commonAccessibilityExpression = `(() => {
     .filter((id, index, ids) => ids.indexOf(id) !== index);
   return JSON.stringify({
     overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+    overflowY: document.documentElement.scrollHeight > document.documentElement.clientHeight,
     focusableCount: controls.length,
     unnamedControls,
     badTabIndex,
@@ -62,6 +68,86 @@ const reducedMotionExpression = `(() => {
     reduced: matchMedia('(prefers-reduced-motion: reduce)').matches,
     animatedCount: animated.length,
     overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+    overflowY: document.documentElement.scrollHeight > document.documentElement.clientHeight,
+  });
+})()`;
+
+const fixedViewportExpression = `(() => {
+  const viewport = { width: window.innerWidth, height: window.innerHeight };
+  const isVisible = (element) => {
+    if (!element) return false;
+    const style = getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 2 && rect.height > 2;
+  };
+  const rectInfo = (selector) => {
+    const element = document.querySelector(selector);
+    if (!element) return null;
+    const rect = element.getBoundingClientRect();
+    return {
+      selector,
+      top: Math.round(rect.top),
+      left: Math.round(rect.left),
+      right: Math.round(rect.right),
+      bottom: Math.round(rect.bottom),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+      visible: isVisible(element),
+      inViewport: rect.left >= -1 && rect.top >= -1 && rect.right <= viewport.width + 1 && rect.bottom <= viewport.height + 1,
+    };
+  };
+  const overlaps = (a, b) => a && b && a.visible && b.visible && a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+  const nativeScrollables = [...document.querySelectorAll('*')]
+    .filter((element) => {
+      const style = getComputedStyle(element);
+      if (style.display === 'none' || style.visibility === 'hidden') return false;
+      const yScrollable = ['auto', 'scroll'].includes(style.overflowY) && element.scrollHeight > element.clientHeight + 1;
+      const xScrollable = ['auto', 'scroll'].includes(style.overflowX) && element.scrollWidth > element.clientWidth + 1;
+      return yScrollable || xScrollable;
+    })
+    .map((element) => {
+      const className = typeof element.className === 'string' && element.className.trim() ? '.' + element.className.trim().split(/\\s+/).slice(0, 3).join('.') : '';
+      return element.tagName.toLowerCase() + (element.id ? '#' + element.id : className);
+    })
+    .slice(0, 18);
+  const app = rectInfo('.app-shell');
+  const topbar = rectInfo('.topbar');
+  const rail = rectInfo('.rail');
+  const stage = rectInfo('.main-stage');
+  const content = rectInfo('.canvas-layout, .map-layout, .flow-layout, .feynman-stage, .mastery-layout, .evidence-layout, .research-layout, .admin-layout');
+  const floatingToolbar = rectInfo('.stage-reading-toolbar');
+  const criticalTargets = [...document.querySelectorAll('.section-heading, .flow-mission, .question-card, .research-panel, .admin-panel, .hero-panel')]
+    .map((element, index) => {
+      const rect = element.getBoundingClientRect();
+      return {
+        index,
+        top: Math.round(rect.top),
+        left: Math.round(rect.left),
+        right: Math.round(rect.right),
+        bottom: Math.round(rect.bottom),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+        visible: isVisible(element),
+      };
+    })
+    .filter((item) => item.visible)
+    .slice(0, 8);
+  return JSON.stringify({
+    viewport,
+    rootOverflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+    rootOverflowY: document.documentElement.scrollHeight > document.documentElement.clientHeight + 1,
+    bodyOverflowX: document.body.scrollWidth > document.body.clientWidth + 1,
+    bodyOverflowY: document.body.scrollHeight > document.body.clientHeight + 1,
+    app,
+    topbar,
+    rail,
+    stage,
+    content,
+    contentVisible: Boolean(content?.visible && content.width > Math.min(280, viewport.width * 0.52) && content.height > Math.min(260, viewport.height * 0.35)),
+    floatingToolbarVisible: Boolean(floatingToolbar?.visible),
+    floatingToolbarOverlap: criticalTargets.some((target) => overlaps(floatingToolbar, target)),
+    nativeScrollables,
+    textLength: document.body.textContent.trim().length,
   });
 })()`;
 
@@ -77,9 +163,10 @@ const checks = [
       emptyUpload: document.querySelector('.upload-zone')?.textContent?.includes('拖拽或选择材料') ?? false,
       noInjectedNodes: document.body.textContent.includes('0/0 已掌握'),
       mapDisabled: document.querySelector('.process-board .primary-button')?.disabled ?? false,
-      overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth
+      overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+      overflowY: document.documentElement.scrollHeight > document.documentElement.clientHeight
     })`,
-    assert: (value) => value.canvas && value.topicInput && value.topicSubmit && value.topicSubmitDisabled && value.emptyUpload && value.noInjectedNodes && value.mapDisabled && !value.overflowX,
+    assert: (value) => value.canvas && value.topicInput && value.topicSubmit && value.topicSubmitDisabled && value.emptyUpload && value.noInjectedNodes && value.mapDisabled && !value.overflowX && !value.overflowY,
     keyboardTargets: [".topic-form textarea", ".upload-zone input", ".rail-button.active", ".process-board .primary-button"],
   },
   {
@@ -92,9 +179,10 @@ const checks = [
       parsingUpload: document.querySelector('.upload-zone.parsing')?.textContent?.includes('解析完成前不能上传其他文档') ?? false,
       fileDisabled: document.querySelector('.upload-zone input')?.disabled ?? false,
       progress: document.querySelector('.progress-meta')?.textContent?.includes('54%') ?? false,
-      overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth
+      overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+      overflowY: document.documentElement.scrollHeight > document.documentElement.clientHeight
     })`,
-    assert: (value) => value.parsingTopic && value.topicDisabled && value.topicSubmitDisabled && value.parsingUpload && value.fileDisabled && value.progress && !value.overflowX,
+    assert: (value) => value.parsingTopic && value.topicDisabled && value.topicSubmitDisabled && value.parsingUpload && value.fileDisabled && value.progress && !value.overflowX && !value.overflowY,
     keyboardTargets: [".rail-button.active", ".icon-button", ".secondary-button.compact"],
   },
   {
@@ -109,17 +197,12 @@ const checks = [
         const evidence = document.querySelector('.node-evidence-board')?.getBoundingClientRect();
         return Boolean(history && evidence && evidence.top >= history.bottom);
       })(),
-      evidenceScrollReady: (() => {
-        const scroll = document.querySelector('.node-evidence-scroll');
-        if (!scroll) return false;
-        const style = getComputedStyle(scroll);
-        return ['auto', 'scroll'].includes(style.overflowY);
-      })(),
       nodeEvidencePanel: document.querySelector('.node-evidence-panel')?.textContent?.includes('复杂度原因') ?? false,
       mapFormulaRendered: document.querySelectorAll('.node-evidence-board .math-display, .node-evidence-panel .math-display').length > 0,
-      overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth
+      overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+      overflowY: document.documentElement.scrollHeight > document.documentElement.clientHeight
     })`,
-    assert: (value) => value.mapStage && value.noOverlayEvidence && value.sideEvidence && value.evidenceBelowHistory && value.evidenceScrollReady && value.nodeEvidencePanel && value.mapFormulaRendered && !value.overflowX,
+    assert: (value) => value.mapStage && value.noOverlayEvidence && value.sideEvidence && value.evidenceBelowHistory && value.nodeEvidencePanel && value.mapFormulaRendered && !value.overflowX && !value.overflowY,
     keyboardTargets: [".knowledge-node.selected", ".node-row.selected", ".node-inspector .primary-button"],
   },
   {
@@ -148,12 +231,14 @@ const checks = [
       feynmanAction: document.querySelector('.flow-actions')?.textContent?.includes('进入费曼舞台') ?? false,
       memoryNoFake: document.querySelector('.memory-board')?.textContent?.includes('系统不会展示预估记录') ?? false,
       memoryVisible: (() => {
+        if (window.innerWidth <= 1080) return true;
         const rect = document.querySelector('.memory-board')?.getBoundingClientRect();
         return Boolean(rect && rect.height > 0 && rect.bottom <= window.innerHeight);
       })(),
-      overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth
+      overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+      overflowY: document.documentElement.scrollHeight > document.documentElement.clientHeight
     })`,
-    assert: (value) => value.flow && value.noChallengeStrip && value.noChatHeader && value.noTopbarStyleDuplicate && value.personaInLeftPanel && value.personaNotInChatPanel && value.learningRoute && value.agentPanel && value.agentCollapsed && value.agentCompact && value.agentCompactScore && value.agentNodes === 0 && value.agentEvents === 0 && value.graphActive && value.mission && value.messageStage && value.formulaRendered && value.composer && value.confuseAction && value.feynmanAction && value.memoryNoFake && value.memoryVisible && !value.overflowX,
+    assert: (value) => value.flow && value.noChallengeStrip && value.noChatHeader && value.noTopbarStyleDuplicate && value.personaInLeftPanel && value.personaNotInChatPanel && value.learningRoute && value.agentPanel && value.agentCollapsed && value.agentCompact && value.agentCompactScore && value.agentNodes === 0 && value.agentEvents === 0 && value.graphActive && value.mission && value.messageStage && value.formulaRendered && value.composer && value.confuseAction && value.feynmanAction && value.memoryNoFake && value.memoryVisible && !value.overflowX && !value.overflowY,
     keyboardTargets: [".persona-switcher .active", ".composer input", ".flow-actions .secondary-button", ".flow-actions .primary-button"],
   },
   {
@@ -163,9 +248,10 @@ const checks = [
       recorder: Boolean(document.querySelector('.recorder-studio .record-button')),
       textarea: Boolean(document.querySelector('.answer-studio textarea')),
       sidePanelVisible: Boolean(document.querySelector('.side-panel')),
-      overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth
+      overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+      overflowY: document.documentElement.scrollHeight > document.documentElement.clientHeight
     })`,
-    assert: (value) => value.recorder && value.textarea && !value.sidePanelVisible && !value.overflowX,
+    assert: (value) => value.recorder && value.textarea && !value.sidePanelVisible && !value.overflowX && !value.overflowY,
     keyboardTargets: [".record-button", ".answer-studio textarea", ".flow-actions .primary-button"],
   },
   {
@@ -174,18 +260,11 @@ const checks = [
     expression: `JSON.stringify({
       resultBrief: Boolean(document.querySelector('.result-brief')),
       evidenceCollapsed: Boolean(document.querySelector('.evidence-details:not([open])')),
-      evidenceScrollReady: (() => {
-        const details = document.querySelector('.evidence-details');
-        details?.setAttribute('open', '');
-        const list = document.querySelector('.evidence-list');
-        if (!list) return false;
-        const style = getComputedStyle(list);
-        return ['auto', 'scroll'].includes(style.overflowY) && style.maxHeight !== 'none';
-      })(),
       sidePanelVisible: Boolean(document.querySelector('.side-panel')),
-      overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth
+      overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+      overflowY: document.documentElement.scrollHeight > document.documentElement.clientHeight
     })`,
-    assert: (value) => value.resultBrief && value.evidenceCollapsed && value.evidenceScrollReady && !value.sidePanelVisible && !value.overflowX,
+    assert: (value) => value.resultBrief && value.evidenceCollapsed && !value.sidePanelVisible && !value.overflowX && !value.overflowY,
     keyboardTargets: [".evidence-details summary", ".rail-button.active"],
   },
   {
@@ -204,9 +283,10 @@ const checks = [
       })(),
       confusionStats: document.body.textContent.includes('我听不懂 2 次') && document.body.textContent.includes('模型判断解决 1 次'),
       noFakeCopy: document.body.textContent.includes('没有发生的数据不会显示成预估值'),
-      overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth
+      overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+      overflowY: document.documentElement.scrollHeight > document.documentElement.clientHeight
     })`,
-    assert: (value) => value.dashboard && value.cards === 4 && value.radar && value.radarAxes === 6 && value.radarContained && value.confusionStats && value.noFakeCopy && !value.overflowX,
+    assert: (value) => value.dashboard && value.cards === 4 && value.radar && value.radarAxes === 6 && value.radarContained && value.confusionStats && value.noFakeCopy && !value.overflowX && !value.overflowY,
     keyboardTargets: [".rail-button.active", ".icon-button", ".secondary-button.compact"],
   },
   {
@@ -215,9 +295,10 @@ const checks = [
     expression: `JSON.stringify({
       empty: document.querySelector('.evidence-empty')?.textContent?.includes('暂无费曼评分证据') ?? false,
       noWeakScore: !(document.body.textContent.includes('最低分项：')),
-      overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth
+      overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+      overflowY: document.documentElement.scrollHeight > document.documentElement.clientHeight
     })`,
-    assert: (value) => value.empty && value.noWeakScore && !value.overflowX,
+    assert: (value) => value.empty && value.noWeakScore && !value.overflowX && !value.overflowY,
     keyboardTargets: [".rail-button.active", ".icon-button", ".secondary-button.compact"],
   },
   {
@@ -230,9 +311,10 @@ const checks = [
       userCount: document.querySelector('.admin-list-panel + .admin-list-panel')?.textContent?.includes('用户与权限') ?? false,
       activeProvider: document.body.textContent.includes('gpt-4.1-mini'),
       tokenUsage: document.body.textContent.includes('今日 Token') && document.body.textContent.includes('总 token') && document.body.textContent.includes('今日 token'),
-      overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth
+      overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+      overflowY: document.documentElement.scrollHeight > document.documentElement.clientHeight
     })`,
-    assert: (value) => value.admin && value.statusStrip && value.configCount && value.userCount && value.activeProvider && value.tokenUsage && !value.overflowX,
+    assert: (value) => value.admin && value.statusStrip && value.configCount && value.userCount && value.activeProvider && value.tokenUsage && !value.overflowX && !value.overflowY,
     keyboardTargets: [".admin-form select", ".admin-form input", ".admin-form .primary-button"],
   },
   {
@@ -242,37 +324,38 @@ const checks = [
       research: Boolean(document.querySelector('.research-layout')),
       heading: document.querySelector('.research-overview')?.textContent?.includes('教师端 / 研究端') ?? false,
       metrics: document.querySelectorAll('.research-metric-card').length,
+      tabs: document.querySelectorAll('.research-tabs button').length,
       weakPoints: document.querySelector('.research-rank-list')?.textContent?.includes('transfer') ?? false,
       distribution: document.querySelectorAll('.distribution-row').length === 4,
-      materialQuality: document.querySelector('.material-quality-list')?.textContent?.includes('条件概率讲义') ?? false,
+      materialQuality: document.querySelector('.material-quality-pager')?.textContent?.includes('条件概率讲义') ?? false,
       memories: document.querySelector('.memory-category-list')?.textContent?.includes('认知卡点') ?? false,
-      experiments: document.querySelector('.experiment-summary-list')?.textContent?.includes('ChatGPT') ?? false,
-      agreement: document.querySelector('.agreement-grid')?.textContent?.includes('相关系数') ?? false,
-      importBox: Boolean(document.querySelector('.research-import-body textarea')),
       exportButton: document.querySelector('.research-actions')?.textContent?.includes('匿名导出') ?? false,
       blindExport: document.querySelector('.research-actions')?.textContent?.includes('盲评答卷') ?? false,
-      records: document.querySelector('.experiment-record-list')?.textContent?.includes('p001') ?? false,
-      overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth
+      viewportWidth: window.innerWidth,
+      overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+      overflowY: document.documentElement.scrollHeight > document.documentElement.clientHeight
     })`,
-    assert: (value) => value.research && value.heading && value.metrics >= 6 && value.weakPoints && value.distribution && value.materialQuality && value.memories && value.experiments && value.agreement && value.importBox && value.exportButton && value.blindExport && value.records && !value.overflowX,
-    keyboardTargets: [".rail-button.active", ".research-heading-row .secondary-button", ".research-import-body textarea", ".research-import-body .primary-button", ".icon-button"],
+    assert: (value) => value.research && value.heading && value.tabs === 4 && value.metrics >= (value.viewportWidth <= 720 ? 1 : 4) && value.weakPoints && value.distribution && value.materialQuality && value.memories && value.exportButton && value.blindExport && !value.overflowX && !value.overflowY,
+    keyboardTargets: [".rail-button.active", ".research-tabs .active", ".research-tabs button:nth-child(4)", ".icon-button"],
   },
 ];
 
 await mkdir(outputDir, { recursive: true });
 
 const results = [];
-for (const [index, check] of checks.entries()) {
-  const result = await runCheck(check, 9701 + index);
-  results.push({ name: check.name, ...result });
-  if (!check.assert(result.value)) {
-    throw new Error(`UI review check failed for ${check.name}: ${JSON.stringify(result.value)}`);
+for (const [checkIndex, check] of checks.entries()) {
+  for (const [viewportIndex, viewport] of viewports.entries()) {
+    const result = await runCheck(check, viewport, 9701 + checkIndex * viewports.length + viewportIndex);
+    results.push({ name: check.name, viewport: viewport.name, ...result });
+    if (!check.assert(result.value)) {
+      throw new Error(`UI review check failed for ${check.name}/${viewport.name}: ${JSON.stringify(result.value)}`);
+    }
   }
 }
 
 console.log(JSON.stringify(results, null, 2));
 
-async function runCheck(check, port) {
+async function runCheck(check, viewport, port) {
   const chrome = spawn(
     chromeBin,
     [
@@ -280,15 +363,26 @@ async function runCheck(check, port) {
       "--no-sandbox",
       "--disable-gpu",
       `--remote-debugging-port=${port}`,
-      "--window-size=1440,900",
-      check.url,
+      `--window-size=${viewport.width},${viewport.height}`,
+      "about:blank",
     ],
     { stdio: ["ignore", "ignore", "ignore"] },
   );
 
   try {
-    await delay(900);
+    await delay(450);
     const devtools = await connectToPage(port);
+    await devtools.call("Emulation.setDeviceMetricsOverride", {
+      width: viewport.width,
+      height: viewport.height,
+      deviceScaleFactor: 1,
+      mobile: viewport.name === "mobile",
+      screenWidth: viewport.width,
+      screenHeight: viewport.height,
+    });
+    await devtools.call("Page.navigate", { url: check.url });
+    await waitForDocumentReady(devtools);
+    await waitForStageReady(devtools);
     const evaluation = await devtools.call("Runtime.evaluate", { expression: check.expression, returnByValue: true });
     const value = JSON.parse(evaluation.result.value);
     const accessibilityEvaluation = await devtools.call("Runtime.evaluate", {
@@ -296,7 +390,13 @@ async function runCheck(check, port) {
       returnByValue: true,
     });
     const accessibility = JSON.parse(accessibilityEvaluation.result.value);
-    assertCommonAccessibility(check.name, accessibility);
+    assertCommonAccessibility(`${check.name}/${viewport.name}`, accessibility);
+    const fixedViewportEvaluation = await devtools.call("Runtime.evaluate", {
+      expression: fixedViewportExpression,
+      returnByValue: true,
+    });
+    const fixedViewport = JSON.parse(fixedViewportEvaluation.result.value);
+    assertFixedViewport(`${check.name}/${viewport.name}`, fixedViewport);
     const keyboard = await verifyKeyboardTargets(devtools, check.keyboardTargets ?? []);
     await devtools.call("Emulation.setEmulatedMedia", {
       features: [{ name: "prefers-reduced-motion", value: "reduce" }],
@@ -306,14 +406,44 @@ async function runCheck(check, port) {
       returnByValue: true,
     });
     const reducedMotion = JSON.parse(reducedMotionEvaluation.result.value);
-    assertReducedMotion(check.name, reducedMotion);
+    assertReducedMotion(`${check.name}/${viewport.name}`, reducedMotion);
     const screenshot = await devtools.call("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
-    await writeFile(`${outputDir}/${check.name}-ui-review.png`, Buffer.from(screenshot.data, "base64"));
+    await writeFile(`${outputDir}/${check.name}-${viewport.name}-ui-review.png`, Buffer.from(screenshot.data, "base64"));
     devtools.close();
-    return { value, accessibility, keyboard, reducedMotion, screenshot: `${outputDir}/${check.name}-ui-review.png` };
+    return { value, accessibility, fixedViewport, keyboard, reducedMotion, screenshot: `${outputDir}/${check.name}-${viewport.name}-ui-review.png` };
   } finally {
     chrome.kill("SIGTERM");
   }
+}
+
+async function waitForDocumentReady(devtools) {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const evaluation = await devtools.call("Runtime.evaluate", {
+      expression: `document.readyState === 'complete' && Boolean(document.querySelector('.app-shell'))`,
+      returnByValue: true,
+    });
+    if (evaluation.result.value) return;
+    await delay(80);
+  }
+  throw new Error("Timed out waiting for app shell");
+}
+
+async function waitForStageReady(devtools) {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const evaluation = await devtools.call("Runtime.evaluate", {
+      expression: `(() => {
+        const stage = document.querySelector('.canvas-layout, .map-layout, .flow-layout, .feynman-stage, .mastery-layout, .evidence-layout, .research-layout, .admin-layout');
+        if (!stage) return false;
+        const style = getComputedStyle(stage);
+        const rect = stage.getBoundingClientRect();
+        return style.visibility !== 'hidden' && parseFloat(style.opacity || '1') > 0.95 && rect.width > 20 && rect.height > 20;
+      })()`,
+      returnByValue: true,
+    });
+    if (evaluation.result.value) return;
+    await delay(80);
+  }
+  throw new Error("Timed out waiting for stage transition");
 }
 
 async function verifyKeyboardTargets(devtools, selectors) {
@@ -365,6 +495,7 @@ async function verifyKeyboardTargets(devtools, selectors) {
 function assertCommonAccessibility(name, accessibility) {
   const failures = [];
   if (accessibility.overflowX) failures.push("horizontal overflow");
+  if (accessibility.overflowY) failures.push("vertical document overflow");
   if (accessibility.focusableCount <= 0) failures.push("no focusable controls");
   if (accessibility.unnamedControls.length > 0) failures.push(`unnamed controls: ${accessibility.unnamedControls.join(" | ")}`);
   if (accessibility.badTabIndex.length > 0) failures.push(`positive tabindex: ${accessibility.badTabIndex.join(" | ")}`);
@@ -375,10 +506,29 @@ function assertCommonAccessibility(name, accessibility) {
   }
 }
 
+function assertFixedViewport(name, fixedViewport) {
+  const failures = [];
+  if (fixedViewport.rootOverflowX || fixedViewport.bodyOverflowX) failures.push("root/body horizontal overflow");
+  if (fixedViewport.rootOverflowY || fixedViewport.bodyOverflowY) failures.push("root/body vertical overflow");
+  if (!fixedViewport.app?.inViewport) failures.push(`app shell escapes viewport: ${JSON.stringify(fixedViewport.app)}`);
+  if (!fixedViewport.topbar?.inViewport) failures.push(`topbar escapes viewport: ${JSON.stringify(fixedViewport.topbar)}`);
+  if (!fixedViewport.rail?.inViewport) failures.push(`rail escapes viewport: ${JSON.stringify(fixedViewport.rail)}`);
+  if (!fixedViewport.stage?.inViewport) failures.push(`main stage escapes viewport: ${JSON.stringify(fixedViewport.stage)}`);
+  if (!fixedViewport.contentVisible) failures.push(`stage content is blank or too small: ${JSON.stringify(fixedViewport.content)}`);
+  if (fixedViewport.floatingToolbarVisible) failures.push("floating stage toolbar must be removed");
+  if (fixedViewport.floatingToolbarOverlap) failures.push("floating toolbar overlaps content");
+  if (fixedViewport.nativeScrollables.length > 0) failures.push(`native scrollable regions: ${fixedViewport.nativeScrollables.join(", ")}`);
+  if (fixedViewport.textLength < 40) failures.push("page text is unexpectedly sparse");
+  if (failures.length > 0) {
+    throw new Error(`Fixed viewport check failed for ${name}: ${failures.join("; ")}`);
+  }
+}
+
 function assertReducedMotion(name, reducedMotion) {
   const failures = [];
   if (!reducedMotion.reduced) failures.push("reduced motion media query was not emulated");
   if (reducedMotion.overflowX) failures.push("horizontal overflow");
+  if (reducedMotion.overflowY) failures.push("vertical document overflow");
   if (reducedMotion.animatedCount > 0) failures.push(`${reducedMotion.animatedCount} elements still animate or transition`);
   if (failures.length > 0) {
     throw new Error(`Reduced motion check failed for ${name}: ${failures.join("; ")}`);

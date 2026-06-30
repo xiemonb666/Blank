@@ -1,6 +1,7 @@
 import { CSSProperties } from "react";
 import { ArrowRight, Lock } from "lucide-react";
 import { statusLabel } from "../app/sessionState";
+import { PagedList } from "../components/DesignPrimitives";
 import { ParseStatus, type ParseMeta } from "../components/ParseStatus";
 import { RichText } from "../components/RichText";
 import type { KnowledgeNode } from "../types";
@@ -86,8 +87,12 @@ export function MapStage({
           <p className="eyebrow">Node Inspector</p>
           <h3>节点清单</h3>
         </div>
-        <div className="node-list">
-          {nodes.map((node) => (
+        <PagedList
+          items={nodes}
+          pageSize={4}
+          ariaLabel="节点清单"
+          className="node-list-pager"
+          renderItem={(node) => (
             <button
               key={node.id}
               type="button"
@@ -101,8 +106,8 @@ export function MapStage({
                 <small>{statusLabel(node.status)} · {node.deps.length} 前置</small>
               </span>
             </button>
-          ))}
-        </div>
+          )}
+        />
         {activeNode && (
           <section className="node-evidence-panel">
             <div>
