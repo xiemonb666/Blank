@@ -30,6 +30,12 @@ def clear_store_tables(store: SessionStore) -> None:
         connection.execute("delete from audit_logs")
         connection.execute("delete from parse_jobs")
         connection.execute("delete from sessions")
+        connection.execute("delete from organization_knowledge_chunks")
+        connection.execute("delete from organization_knowledge_items")
+        connection.execute("delete from organization_task_assignments")
+        connection.execute("delete from organization_learning_tasks")
+        connection.execute("delete from organization_memberships")
+        connection.execute("delete from organizations")
         connection.execute("delete from api_configs")
         connection.execute("delete from auth_tokens")
         connection.execute("delete from users")
@@ -161,7 +167,7 @@ def cookie_client(username: str, role: str = "learner") -> tuple[TestClient, str
     return client, csrf_token
 
 
-def make_session(user_id: str, title: str = "V2 测试材料") -> LearningSession:
+def make_session(user_id: str, title: str = "V2 测试材料", organization_id: str | None = None) -> LearningSession:
     node = KnowledgeNode(
         id="node-a",
         title="注意力机制",
@@ -176,6 +182,7 @@ def make_session(user_id: str, title: str = "V2 测试材料") -> LearningSessio
     session = LearningSession(
         id="0123456789abcdef0123456789abcdef",
         user_id=user_id,
+        organization_id=organization_id,
         material_title=title,
         material_context="注意力机制会根据查询和键的相关性分配权重。",
         nodes=[node],
@@ -356,6 +363,58 @@ def test_v2_graphrag_search_is_scoped_by_session(monkeypatch) -> None:
             "session_id": "0123456789abcdef0123456789abcdef",
             "source_id": "0123456789abcdef0123456789abcdef",
         }
+    ]
+
+
+def test_v2_graphrag_search_includes_organization_scope(monkeypatch) -> None:
+    from app.services_v2 import vector_service
+
+    monkeypatch.setenv("BLANK_GRAPHRAG_ENABLED", "true")
+    calls: list[dict[str, str]] = []
+
+    def scoped_search(query, ai_config, top_k=5, **scope):
+        calls.append(scope)
+        label = "组织知识库片段" if scope["tenant_id"].startswith("org") else "个人材料片段"
+        return {"chunks": [{"text": label, "score": 1.0, "source_id": scope["source_id"]}], "subgraphs": []}
+
+    monkeypatch.setattr(vector_service, "hybrid_graph_search", scoped_search)
+    active_config()
+    client = TestClient(app_main.app)
+    manager_headers = auth_headers(client, "v2_org_manager", role="org_manager")
+    manager_id = registered_user_id("v2_org_manager")
+    organization = app_main.store.create_organization(
+        organization_id="org00000000000000000000000000001",
+        code="ORG-V2SCOPE",
+        name="V2 组织",
+        owner_user_id=manager_id,
+        created_at=datetime.now(UTC).isoformat(),
+    )
+    member_headers = auth_headers(client, "v2_org_member", role="org_member")
+    member_id = registered_user_id("v2_org_member")
+    app_main.store.add_organization_member(organization.id, member_id, "org_member", datetime.now(UTC).isoformat())
+    make_session(member_id, organization_id=organization.id)
+
+    with client.stream(
+        "POST",
+        "/api/v2/chat/stream",
+        headers={**member_headers, **auth_origin_headers()},
+        json={"session_id": "0123456789abcdef0123456789abcdef", "message": "组织检索", "persona": "plain"},
+    ) as response:
+        _body = "".join(response.iter_text())
+
+    assert manager_headers
+    assert response.status_code == 200
+    assert calls == [
+        {
+            "tenant_id": member_id,
+            "user_id": member_id,
+            "session_id": "0123456789abcdef0123456789abcdef",
+            "source_id": "0123456789abcdef0123456789abcdef",
+        },
+        {
+            "tenant_id": organization.id,
+            "session_id": organization.id,
+        },
     ]
 
 

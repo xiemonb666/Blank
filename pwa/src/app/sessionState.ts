@@ -116,6 +116,10 @@ export function stageLabel(stage: Stage) {
       return "教师研究端";
     case "admin":
       return "后台管理";
+    case "organization":
+      return "组织管理";
+    case "tasks":
+      return "组织任务";
   }
 }
 

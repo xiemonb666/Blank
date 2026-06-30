@@ -17,7 +17,7 @@ from app import auth as auth_module
 from app import main as app_main
 from app import secrets as secrets_module
 from app.materials import MAX_MATERIAL_CHARS, decode_text, extract_pdf_text
-from app.models import ChatMessage, MemoryEntry
+from app.models import ChatMessage, KnowledgeNode, LearningSession, MemoryEntry
 from app.services import (
     create_session,
     call_openai_compatible_chat,
@@ -53,6 +53,13 @@ def clear_store_tables(store: SessionStore) -> None:
         connection.execute("delete from audit_logs")
         connection.execute("delete from parse_jobs")
         connection.execute("delete from sessions")
+        connection.execute("delete from organization_knowledge_chunks")
+        connection.execute("delete from organization_knowledge_items")
+        connection.execute("delete from organization_task_assignments")
+        connection.execute("delete from organization_learning_tasks")
+        connection.execute("delete from organization_memberships")
+        connection.execute("delete from organizations")
+        connection.execute("delete from speech_configs")
         connection.execute("delete from api_configs")
         connection.execute("delete from auth_tokens")
         connection.execute("delete from users")
@@ -950,6 +957,107 @@ def test_speech_tts_endpoint_streams_audio(monkeypatch) -> None:
         assert speech_server.requests[0]["path"] == "/v1/audio/speech"
         assert speech_server.requests[0]["authorization"] == "Bearer speech-tts-secret"
         assert speech_server.requests[0]["json"]["voice"] == "F1"
+    finally:
+        speech_server.stop()
+
+
+def test_admin_speech_config_enables_capabilities_and_encrypts_key() -> None:
+    speech_server = FakeSpeechServer()
+    speech_server.start()
+    client = TestClient(app_main.app)
+    headers = auth_headers(client, "tester_admin_speech_config", role="admin")
+
+    try:
+        created = client.post(
+            "/api/admin/speech-configs",
+            headers=headers,
+            json={
+                "kind": "asr",
+                "provider": "sensevoice-openai",
+                "base_url": speech_server.base_url,
+                "api_key": "speech-config-secret",
+                "model": "SenseVoiceSmall",
+                "path": "/v1/audio/transcriptions",
+                "is_active": True,
+            },
+        )
+        assert created.status_code == 200
+        payload = created.json()
+        assert payload["kind"] == "asr"
+        assert payload["api_key_masked"] == "已保存（20 字符）"
+        assert "speech-config-secret" not in json.dumps(payload, ensure_ascii=False)
+
+        capabilities = client.get("/api/speech/capabilities", headers=headers)
+        assert capabilities.status_code == 200
+        assert capabilities.json()["asr_enabled"] is True
+        assert capabilities.json()["asr_provider"] == "sensevoice-openai"
+        assert capabilities.json()["asr_model"] == "SenseVoiceSmall"
+
+        transcribed = client.post(
+            "/api/speech/asr/transcribe",
+            headers=headers,
+            files={"file": ("recording.webm", b"fake-webm-audio", "audio/webm")},
+            data={"language": "zh"},
+        )
+        assert transcribed.status_code == 200
+        assert transcribed.json()["text"] == "这是 SenseVoice 返回的转写文本。"
+        assert speech_server.requests[0]["authorization"] == "Bearer speech-config-secret"
+
+        with app_main.store._connect() as connection:
+            row = connection.execute(
+                "select api_key from speech_configs where id = ?",
+                (payload["id"],),
+            ).fetchone()
+        assert row is not None
+        assert "speech-config-secret" not in row["api_key"]
+        assert app_main.store.get_speech_config_secret(payload["id"]) == "speech-config-secret"
+    finally:
+        speech_server.stop()
+
+
+def test_admin_tts_config_is_used_by_speech_endpoint() -> None:
+    speech_server = FakeSpeechServer()
+    speech_server.start()
+    client = TestClient(app_main.app)
+    headers = auth_headers(client, "tester_admin_tts_config", role="admin")
+
+    try:
+        created = client.post(
+            "/api/admin/speech-configs",
+            headers=headers,
+            json={
+                "kind": "tts",
+                "provider": "supertonic-http",
+                "base_url": speech_server.base_url,
+                "api_key": "speech-tts-config-secret",
+                "model": "supertonic",
+                "path": "/v1/audio/speech",
+                "is_active": True,
+                "voice": "F2",
+                "language": "zh",
+                "response_format": "wav",
+            },
+        )
+        assert created.status_code == 200
+
+        capabilities = client.get("/api/speech/capabilities", headers=headers)
+        assert capabilities.status_code == 200
+        assert capabilities.json()["tts_enabled"] is True
+        assert capabilities.json()["tts_provider"] == "supertonic-http"
+        assert capabilities.json()["tts_voice"] == "F2"
+
+        spoken = client.post(
+            "/api/speech/tts",
+            headers=headers,
+            json={"text": "把后台配置读给我听"},
+        )
+        assert spoken.status_code == 200
+        assert spoken.headers["x-blank-speech-provider"] == "supertonic-http"
+        assert spoken.headers["x-blank-speech-voice"] == "F2"
+        assert spoken.content.startswith(b"RIFF")
+        assert speech_server.requests[0]["path"] == "/v1/audio/speech"
+        assert speech_server.requests[0]["authorization"] == "Bearer speech-tts-config-secret"
+        assert speech_server.requests[0]["json"]["voice"] == "F2"
     finally:
         speech_server.stop()
 
@@ -2223,6 +2331,221 @@ def test_production_registration_requires_admin_bootstrap_or_explicit_opt_in(mon
     assert allowed.json()["user"]["role"] == "learner"
 
 
+def test_default_admin_seed_and_optional_password_change() -> None:
+    app_main.ensure_default_admin_account()
+    client = TestClient(app_main.app)
+
+    login = client.post(
+        "/api/auth/login",
+        headers=auth_origin_headers(),
+        json={"username": "xiemonb666", "password": "xiemonb666"},
+    )
+    assert login.status_code == 200
+    payload = login.json()
+    assert payload["user"]["role"] == "admin"
+    assert payload["user"]["default_credentials_seeded"] is True
+    assert payload["security_notice"]["kind"] == "default_admin_credentials"
+
+    csrf_token = login.cookies.get(app_main.CSRF_COOKIE_NAME)
+    changed = client.patch(
+        "/api/me/account",
+        headers={**auth_origin_headers(), "X-CSRF-Token": csrf_token or ""},
+        json={
+            "current_password": "xiemonb666",
+            "username": "rootadmin",
+            "new_password": "Passw0rd999",
+        },
+    )
+    assert changed.status_code == 200
+    assert changed.json()["username"] == "rootadmin"
+    assert changed.json()["security_notice"] is None
+
+    app_main.ensure_default_admin_account()
+    old_login = client.post(
+        "/api/auth/login",
+        headers=auth_origin_headers(),
+        json={"username": "xiemonb666", "password": "xiemonb666"},
+    )
+    assert old_login.status_code == 401
+
+
+def test_organization_registration_and_scope_permissions() -> None:
+    client = TestClient(app_main.app)
+    manager = client.post(
+        "/api/auth/register",
+        headers=auth_origin_headers(),
+        json={
+            "username": "org_manager_a",
+            "password": TEST_PASSWORD,
+            "role": "org_manager",
+            "organization_name": "测试组织",
+        },
+    )
+    assert manager.status_code == 200
+    manager_payload = manager.json()
+    assert manager_payload["user"]["role"] == "org_manager"
+    organization_code = manager_payload["user"]["organization_code"]
+    assert organization_code
+    manager_token = manager.cookies.get(app_main.SESSION_COOKIE_NAME)
+    assert manager_token
+    manager_headers = {"Authorization": f"Bearer {manager_token}"}
+
+    missing_org = client.post(
+        "/api/auth/register",
+        headers=auth_origin_headers(),
+        json={
+            "username": "org_member_missing",
+            "password": TEST_PASSWORD,
+            "role": "org_member",
+            "organization_code": "ORG-NOTFOUND",
+        },
+    )
+    assert missing_org.status_code == 400
+    assert "组织 ID" in missing_org.json()["detail"]
+
+    member = client.post(
+        "/api/auth/register",
+        headers=auth_origin_headers(),
+        json={
+            "username": "org_member_a",
+            "password": TEST_PASSWORD,
+            "role": "org_member",
+            "organization_code": organization_code,
+        },
+    )
+    assert member.status_code == 200
+    member_payload = member.json()
+    assert member_payload["user"]["role"] == "org_member"
+    assert member_payload["user"]["organization_code"] == organization_code
+    member_token = member.cookies.get(app_main.SESSION_COOKIE_NAME)
+    assert member_token
+    member_headers = {"Authorization": f"Bearer {member_token}"}
+
+    current_org = client.get("/api/organizations/current", headers=member_headers)
+    assert current_org.status_code == 200
+    assert current_org.json()["code"] == organization_code
+    assert current_org.json()["current_user_role"] == "org_member"
+
+    members = client.get("/api/organizations/current/members", headers=manager_headers)
+    assert members.status_code == 200
+    usernames = {item["user"]["username"] for item in members.json()}
+    assert {"org_manager_a", "org_member_a"} <= usernames
+
+    forbidden = client.get("/api/organizations/current/members", headers=member_headers)
+    assert forbidden.status_code == 403
+
+    admin_only = client.get("/api/admin/users", headers=manager_headers)
+    assert admin_only.status_code == 403
+
+
+def test_admin_can_create_and_bind_organization_accounts() -> None:
+    client = TestClient(app_main.app)
+    admin_headers = auth_headers(client, "tester_org_admin", role="admin")
+
+    manager = client.post(
+        "/api/admin/users",
+        headers=admin_headers,
+        json={
+            "username": "admin_created_manager",
+            "password": TEST_PASSWORD,
+            "role": "org_manager",
+            "organization_name": "后台创建组织",
+        },
+    )
+    assert manager.status_code == 200
+    manager_user = manager.json()
+    assert manager_user["role"] == "org_manager"
+    assert manager_user["organization_code"]
+
+    member = client.post(
+        "/api/admin/users",
+        headers=admin_headers,
+        json={
+            "username": "admin_created_member",
+            "password": TEST_PASSWORD,
+            "role": "org_member",
+            "organization_code": manager_user["organization_code"],
+        },
+    )
+    assert member.status_code == 200
+    assert member.json()["organization_code"] == manager_user["organization_code"]
+
+    member_login = client.post(
+        "/api/auth/login",
+        headers=auth_origin_headers(),
+        json={"username": "admin_created_member", "password": TEST_PASSWORD},
+    )
+    assert member_login.status_code == 200
+    member_headers = {"Authorization": f"Bearer {member_login.cookies.get(app_main.SESSION_COOKIE_NAME)}"}
+    current_org = client.get("/api/organizations/current", headers=member_headers)
+    assert current_org.status_code == 200
+    assert current_org.json()["code"] == manager_user["organization_code"]
+
+    learner_headers = auth_headers(client, "admin_bound_learner")
+    learner = client.get("/api/me", headers=learner_headers).json()
+    bound = client.patch(
+        f"/api/admin/users/{learner['id']}",
+        headers=admin_headers,
+        json={"role": "org_member", "organization_code": manager_user["organization_code"]},
+    )
+    assert bound.status_code == 200
+    assert bound.json()["organization_code"] == manager_user["organization_code"]
+
+    relogin = client.post(
+        "/api/auth/login",
+        headers=auth_origin_headers(),
+        json={"username": "admin_bound_learner", "password": TEST_PASSWORD},
+    )
+    assert relogin.status_code == 200
+    bound_headers = {"Authorization": f"Bearer {relogin.cookies.get(app_main.SESSION_COOKIE_NAME)}"}
+    assert client.get("/api/organizations/current", headers=bound_headers).status_code == 200
+
+
+def test_organization_knowledge_upload_delete_cleans_database_and_graphrag(monkeypatch) -> None:
+    indexed: list[tuple[str, str]] = []
+    deleted: list[tuple[str, str]] = []
+
+    def fake_index(organization_id: str, _user_id: str, source_id: str, _content: str) -> str:
+        indexed.append((organization_id, source_id))
+        return "indexed"
+
+    def fake_delete(organization_id: str, source_id: str) -> str:
+        deleted.append((organization_id, source_id))
+        return "deleted"
+
+    monkeypatch.setattr(app_main, "index_organization_knowledge_graphrag", fake_index)
+    monkeypatch.setattr(app_main, "delete_organization_knowledge_graphrag", fake_delete, raising=False)
+    client = TestClient(app_main.app)
+    manager = client.post(
+        "/api/auth/register",
+        headers=auth_origin_headers(),
+        json={
+            "username": "org_knowledge_manager",
+            "password": TEST_PASSWORD,
+            "role": "org_manager",
+            "organization_name": "知识库组织",
+        },
+    )
+    assert manager.status_code == 200
+    user = manager.json()["user"]
+    headers = {"Authorization": f"Bearer {manager.cookies.get(app_main.SESSION_COOKIE_NAME)}"}
+
+    uploaded = client.post(
+        "/api/organizations/current/knowledge/upload",
+        headers=headers,
+        files={"file": ("internal.md", b"organization private knowledge\n\nsecond chunk", "text/plain")},
+    )
+    assert uploaded.status_code == 200
+    item = uploaded.json()
+    assert indexed == [(user["organization_id"], item["id"])]
+    assert app_main.store.organization_knowledge_context(user["organization_id"])
+
+    removed = client.delete(f"/api/organizations/current/knowledge/{item['id']}", headers=headers)
+    assert removed.status_code == 200
+    assert deleted == [(user["organization_id"], item["id"])]
+    assert app_main.store.organization_knowledge_context(user["organization_id"]) == ""
+
+
 def test_concurrent_bootstrap_registration_creates_only_one_admin(monkeypatch) -> None:
     monkeypatch.setenv("BLANK_ENV", "production")
     monkeypatch.setenv("BLANK_ADMIN_BOOTSTRAP_KEY", "unit-bootstrap-key")
@@ -2754,6 +3077,51 @@ def test_research_experiment_import_dashboard_and_export() -> None:
     encoded_blind_review = json.dumps(blind_review.json(), ensure_ascii=False)
     assert "tester_research_import" not in encoded_blind_review
     assert "answers" in blind_review.json()
+
+
+def test_research_dashboard_excludes_organization_task_templates() -> None:
+    client = TestClient(app_main.app)
+    headers = auth_headers(client, "tester_research_template_admin", role="admin")
+    user = app_main.store.get_user_password_hash("tester_research_template_admin")[0]
+    node = KnowledgeNode(
+        id="node-template-filter",
+        title="模板过滤",
+        summary="用于确认研究统计不包含组织任务模板。",
+        complexity=1,
+        weight=1.0,
+        status="active",
+        x=10,
+        y=20,
+        deps=[],
+    )
+    normal_session = LearningSession(
+        id="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        user_id=user.id,
+        organization_id="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        material_title="成员学习记录",
+        material_context="成员真实学习材料",
+        nodes=[node],
+        active_node_id=node.id,
+        messages=[],
+        visibility="organization_member",
+    )
+    template_session = normal_session.model_copy(
+        deep=True,
+        update={
+            "id": "cccccccccccccccccccccccccccccccc",
+            "material_title": "组织任务模板",
+            "visibility": "organization_task_template",
+        },
+    )
+    app_main.store.save_session(normal_session)
+    app_main.store.save_session(template_session)
+
+    dashboard = client.get("/api/admin/research-dashboard", headers=headers)
+    assert dashboard.status_code == 200
+    payload = dashboard.json()
+    material_metric = next(item for item in payload["metrics"] if item["label"] == "材料数")
+    assert material_metric["value"] == 1
+    assert [item["title"] for item in payload["material_quality"]] == ["成员学习记录"]
 
 
 def test_audit_log_retention_prunes_old_entries(monkeypatch) -> None:

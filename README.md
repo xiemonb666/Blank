@@ -5,6 +5,7 @@ Blank 是一个教育学习闭环 MVP，核心流程为：**输入 -> 拆解 -> 
 ## 目录
 
 - [功能概览](#功能概览)
+- [账号与组织权限](#账号与组织权限)
 - [架构状态](#架构状态)
 - [快速启动](#快速启动)
 - [Docker 启动](#docker-启动)
@@ -22,11 +23,42 @@ Blank 是一个教育学习闭环 MVP，核心流程为：**输入 -> 拆解 -> 
 - 知识拓扑：生成知识节点、复杂度、依赖关系和解锁状态。
 - 苏格拉底学习：支持 Persona 调节、流式对话、困惑状态记录和自适应降维。
 - 思考摘要：导师消息上方显示可展开的推理要点摘要。
+- 语音闭环：后台可配置 SenseVoice 兼容 ASR 与 Supertonic 兼容 TTS；费曼讲解可录音转写，导师消息和费曼题目可朗读。
 - 费曼验证：提交解释后返回概念覆盖、逻辑连贯、表达负荷等诊断。
 - 记忆系统：PostgreSQL 按用户持久化会话、消息与认知记录。
-- 账号系统：注册、登录、HttpOnly Cookie 会话、双提交 CSRF、管理员/学习者权限。
-- 后台管理：配置 OpenAI / vLLM / Ollama / Custom 的 Base URL、API Key 和模型。
+- 账号系统：注册、登录、HttpOnly Cookie 会话、双提交 CSRF、系统管理员/组织管理者/组织成员/个人学习者四类角色。
+- 后台管理：配置 OpenAI / vLLM / Ollama / Custom 的 Base URL、API Key 和模型，创建账号并分配组织权限。
+- 组织闭环：组织管理者可管理成员、查看组织研究面板、批量下发学习任务、维护组织专属知识库。
 - 教师/研究端：聚合薄弱点、费曼评分分布、材料节点质量、常见误区、长期记忆类别和 token 成本指标。
+
+## 账号与组织权限
+
+空库第一次启动时，后端会自动创建默认系统管理员：
+
+```text
+账号：xiemonb666
+密码：xiemonb666
+```
+
+默认管理员只会在用户表为空时创建，不会覆盖已有账号或重置已修改的密码。该账号首次登录后会弹出“修改账号与密码”提醒；提醒不是强制流程，点击“下次登录修改”会关闭本次弹窗，下次登录仍会提醒，直到修改密码。
+
+角色边界：
+
+| 角色 | 说明 |
+|------|------|
+| 系统管理员 `admin` | 全局后台、API/语音配置、账号创建、组织账号分配、全局研究面板 |
+| 组织管理者 `org_manager` | 本组织成员、任务、知识库、组织研究统计和成员详细学习报告 |
+| 组织成员 `org_member` | 自己的学习会话、本组织任务、组织知识库增强检索 |
+| 个人学习者 `learner` | 原有个人学习闭环，不加入组织 |
+
+注册页支持选择三种公开注册身份：组织管理者、组织成员、个人学习者。组织管理者注册时填写组织名称并自动创建组织 ID；组织成员填写组织 ID 后直接加入组织；个人学习者维持原有逻辑。生产环境仍受 `BLANK_ALLOW_PUBLIC_REGISTRATION` 控制，关闭公开注册时应由系统管理员在后台创建或分配账号。
+
+组织管理者进入“组织”入口后，可在四个标签页完成日常管理：
+
+- 成员：查看每个成员的材料数、掌握节点、平均费曼得分和详细能力维度。
+- 任务：向全部组织成员或指定成员批量下发学习任务，成员启动后生成独立学习会话。
+- 知识库：上传组织内部资料，聊天和拆解检索会追加同组织知识库内容；删除时同步清理组织知识库记录。
+- 组织研究：查看本组织范围内的研究指标、费曼分布、材料质量和成员明细。
 
 ## 架构状态
 
@@ -36,6 +68,7 @@ Blank 是一个教育学习闭环 MVP，核心流程为：**输入 -> 拆解 -> 
 - V1 回退：旧 `/api/sessions/{id}/chat` 单链路导师仍保留用于故障回退。
 - GraphRAG：默认启用 Neo4j 图谱与向量检索，失败时回退材料片段。
 - 主存储：PostgreSQL 是默认主存储，Redis 是默认限流后端，Neo4j 是默认 GraphRAG 底座。
+- 语音服务：ASR/TTS 支持后台数据库配置，未配置时回退 `BLANK_ASR_*` / `BLANK_TTS_*` 环境变量。
 
 ## 快速启动
 
@@ -44,13 +77,18 @@ Blank 是一个教育学习闭环 MVP，核心流程为：**输入 -> 拆解 -> 
 Linux / macOS / WSL：
 
 ```bash
-./scripts/start-in-docker.sh --all-in-one --build
+# 自动检测镜像：已有则跳过构建，缺失则构建
+./scripts/start-in-docker.sh --all-in-one
 ```
 
 Windows PowerShell：
 
 ```powershell
+# 首次启动或依赖变更后
 docker compose -f compose.all-in-one.yaml up --build -d
+
+# 已有镜像时只启动
+docker compose -f compose.all-in-one.yaml up -d --no-build
 ```
 
 访问：
@@ -60,6 +98,8 @@ docker compose -f compose.all-in-one.yaml up --build -d
 API 文档：http://127.0.0.1:8080/docs
 Neo4j Web：http://127.0.0.1:7474
 ```
+
+默认管理员登录信息见 [账号与组织权限](#账号与组织权限)。首次登录后建议立即在弹窗中修改账号或密码。
 
 停止并清理数据卷：
 
@@ -71,7 +111,7 @@ Neo4j Web：http://127.0.0.1:7474
 docker compose -f compose.all-in-one.yaml down -v
 ```
 
-如果本机已有旧容器占用 `5432`、`6379`、`7474`、`7687`、`8000` 或 `8080`，请先停止旧环境，或修改 compose 中的端口映射。
+Linux / macOS / WSL 启动脚本会默认处理 `5432`、`6379`、`7474`、`7687`、`8000`、`8080` 端口冲突。Windows 直接使用 `docker compose` 或脚本加 `--no-kill` 时，需要先手动停止占用这些端口的程序，或修改 compose 中的端口映射。
 
 ## Docker 启动
 
@@ -81,6 +121,8 @@ docker compose -f compose.all-in-one.yaml down -v
 
 - Linux / WSL：已安装 Docker Engine 和 Docker Compose plugin。
 - Windows：已安装 Docker Desktop，并使用 Linux containers 模式。
+
+Linux / macOS / WSL 的 `scripts/start-in-docker.sh` 会自动检测应用镜像：镜像存在时跳过构建，镜像缺失时自动构建。启动前脚本还会检测 Blank 所需端口，优先停止占用端口的 Docker 容器；如果端口仍被宿主机进程占用，会关闭该进程以保证 Blank 优先启动。需要保留占用端口的程序时，可加 `--no-kill`。
 
 | 模式 | 应用镜像 | 适用场景 |
 |------|----------|----------|
@@ -94,8 +136,17 @@ docker compose -f compose.all-in-one.yaml down -v
 Linux / macOS / WSL：
 
 ```bash
-# 启动并构建
+# 自动检测镜像：已有则跳过构建，缺失则构建
+./scripts/start-in-docker.sh --all-in-one
+
+# 只启动已有镜像，不构建；镜像缺失会失败
+./scripts/start-in-docker.sh --all-in-one --no-build
+
+# 强制重新构建并启动
 ./scripts/start-in-docker.sh --all-in-one --build
+
+# 启动但不自动关闭端口冲突程序
+./scripts/start-in-docker.sh --all-in-one --no-kill
 
 # 查看日志
 ./scripts/start-in-docker.sh --all-in-one --logs
@@ -107,7 +158,10 @@ Linux / macOS / WSL：
 Windows PowerShell：
 
 ```powershell
-# 启动并构建
+# 只启动已有镜像，不构建
+docker compose -f compose.all-in-one.yaml up -d --no-build
+
+# 重新构建并启动
 docker compose -f compose.all-in-one.yaml up --build -d
 
 # 查看日志
@@ -129,8 +183,17 @@ API 文档：http://127.0.0.1:8080/docs
 Linux / macOS / WSL：
 
 ```bash
-# 启动并构建
+# 自动检测镜像：已有则跳过构建，缺失则构建
+./scripts/start-in-docker.sh --separated
+
+# 只启动已有镜像，不构建；镜像缺失会失败
+./scripts/start-in-docker.sh --separated --no-build
+
+# 强制重新构建并启动
 ./scripts/start-in-docker.sh --separated --build
+
+# 启动但不自动关闭端口冲突程序
+./scripts/start-in-docker.sh --separated --no-kill
 
 # 查看日志
 ./scripts/start-in-docker.sh --separated --logs
@@ -142,7 +205,10 @@ Linux / macOS / WSL：
 Windows PowerShell：
 
 ```powershell
-# 启动并构建
+# 只启动已有镜像，不构建
+docker compose -f compose.separated.yaml up -d --no-build
+
+# 重新构建并启动
 docker compose -f compose.separated.yaml up --build -d
 
 # 查看日志
@@ -356,17 +422,32 @@ docker compose -f compose.test.yaml down -v
 - `POST /api/sessions/{id}/chat`：V1 学习流回退接口。
 - `POST /api/sessions/{id}/chat/stream`：V1 流式学习流回退接口。
 - `POST /api/v2/chat/stream`：V2 多智能体主路线流式接口。
+- `GET /api/speech/capabilities`：查询当前用户可用的 ASR/TTS 能力。
+- `POST /api/speech/asr/transcribe`：上传录音并转写为文本。
+- `POST /api/speech/tts`：将导师或题目文本合成为音频。
 - `POST /api/sessions/{id}/feynman/questions`：生成费曼验证题。
 - `POST /api/sessions/{id}/feynman/follow-up`：生成费曼追问。
 - `POST /api/sessions/{id}/feynman/answer`：保存单题回答。
 - `POST /api/sessions/{id}/feynman`：提交费曼解释并获得诊断。
 - `POST /api/auth/register` / `POST /api/auth/login` / `POST /api/auth/logout`：认证接口。
-- `GET /api/admin/users`：后台用户管理。
+- `PATCH /api/me/account`：当前账号修改用户名或密码，需提供当前密码。
+- `GET/POST/PATCH /api/admin/users`：后台用户创建、组织绑定和权限管理。
+- `GET /api/admin/organizations`：后台组织列表。
 - `GET/POST/PATCH/DELETE /api/admin/api-configs`：后台 API 配置管理。
+- `GET/POST/PATCH/DELETE /api/admin/speech-configs`：后台语音配置管理。
 - `GET /api/admin/research-dashboard`：教师/研究端聚合指标。
 - `POST /api/admin/research-experiments`：导入匿名实验记录。
 - `GET /api/admin/research-experiments/export`：导出匿名实验记录。
 - `GET /api/admin/research-blind-review/export`：导出匿名费曼答卷。
+- `GET /api/organizations/current`：当前组织信息和当前成员身份。
+- `GET /api/organizations/current/members`：组织成员列表和概要统计。
+- `GET /api/organizations/current/members/{user_id}/report`：组织成员学习报告和费曼维度数据。
+- `GET /api/organizations/current/dashboard`：组织范围研究面板。
+- `POST /api/organizations/current/tasks`：组织管理者创建学习任务，可下发给全部成员或指定成员。
+- `GET /api/me/tasks` / `POST /api/me/tasks/{task_id}/start`：组织成员查看并启动任务。
+- `GET /api/organizations/current/knowledge`：组织知识库列表。
+- `POST /api/organizations/current/knowledge/upload`：上传组织知识库资料。
+- `DELETE /api/organizations/current/knowledge/{id}`：删除组织知识库资料。
 
 当前知识点拆分、学习状态判断、导师对话、费曼诊断和记忆推荐都通过已启用的模型配置真实请求 LLM。如果未启用 API 配置、模型接口连接失败、认证失败或返回格式错误，前端会显示清晰错误，不会静默失败或使用本地伪结果。
 
@@ -382,6 +463,20 @@ docker compose -f compose.test.yaml down -v
 | `BLANK_CORS_ORIGINS` | 允许的前端来源，逗号分隔 | 多个 localhost 端口 |
 | `BLANK_DATABASE_URL` | PostgreSQL 连接字符串 | `postgresql://blank:blank@127.0.0.1:5432/blank` |
 | `BLANK_REDIS_URL` | Redis 限流连接字符串 | `redis://127.0.0.1:6379/0` |
+| `BLANK_ASR_BASE_URL` | ASR 环境变量回退 Base URL；后台语音配置优先 | 空 |
+| `BLANK_ASR_PROVIDER` | ASR Provider 标识 | `sensevoice-openai` |
+| `BLANK_ASR_TRANSCRIBE_PATH` | ASR 转写接口路径 | `/v1/audio/transcriptions` |
+| `BLANK_ASR_MODEL` | ASR 模型名 | `SenseVoiceSmall` |
+| `BLANK_ASR_API_KEY` | ASR API Key；后台配置会加密存储 | `blank-local-asr` |
+| `BLANK_TTS_BASE_URL` | TTS 环境变量回退 Base URL；后台语音配置优先 | 空 |
+| `BLANK_TTS_PROVIDER` | TTS Provider 标识 | `supertonic-http` |
+| `BLANK_TTS_PATH` | TTS 合成接口路径 | `/v1/audio/speech` |
+| `BLANK_TTS_MODEL` | TTS 模型名 | `supertonic` |
+| `BLANK_TTS_API_KEY` | TTS API Key；后台配置会加密存储 | `blank-local-tts` |
+| `BLANK_TTS_VOICE` | 默认 TTS 音色 | `F1` |
+| `BLANK_TTS_LANGUAGE` | 默认 TTS 语言 | `zh` |
+| `BLANK_TTS_RESPONSE_FORMAT` | 默认 TTS 返回格式 | `wav` |
+| `BLANK_SPEECH_READ_TIMEOUT` | ASR/TTS 请求读取超时秒数 | `90` |
 | `BLANK_GRAPHRAG_ENABLED` | 是否启用 GraphRAG | `true` |
 | `BLANK_NEO4J_URI` | Neo4j 连接地址 | `bolt://127.0.0.1:7687` |
 | `BLANK_NEO4J_USER` | Neo4j 用户名 | `neo4j` |
@@ -393,7 +488,7 @@ docker compose -f compose.test.yaml down -v
 | `BLANK_ALLOW_PUBLIC_REGISTRATION` | 是否开放公开注册 | `false` |
 | `VITE_API_BASE_URL` | 前端编译时 API 地址 | `http://localhost:8000` |
 
-生产环境必须显式设置强密钥、实际域名 Host/CORS、HTTPS 反向代理和数据库凭据。
+生产环境必须显式设置强密钥、实际域名 Host/CORS、HTTPS 反向代理和数据库凭据。语音服务推荐在后台管理中配置；若改用环境变量回退，生产环境的 ASR/TTS Base URL 也必须满足模型接口相同的 HTTPS 与 SSRF 防护要求。
 
 ## 安全与部署
 
@@ -404,6 +499,7 @@ docker compose -f compose.test.yaml down -v
 - HttpOnly Cookie 会话，服务端 HMAC 存储登录 token。
 - 后台 API Key 使用 Fernet 加密存储。
 - 模型 Base URL 在保存和请求阶段做 SSRF 防护。
+- 后台语音配置的 API Key 同样加密存储，ASR/TTS Base URL 复用模型请求的 SSRF 防护和重定向拦截。
 - 管理员用户权限和 API 配置写操作要求最近 10 分钟内重新认证。
 - 生产环境关闭 `/docs`、`/redoc` 和 `/openapi.json`。
 

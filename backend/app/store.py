@@ -14,6 +14,13 @@ from .models import (
     LearningSession,
     MaterialQualitySummary,
     MemoryCategorySummary,
+    OrganizationDashboardResponse,
+    OrganizationKnowledgeItem,
+    OrganizationLearningTask,
+    OrganizationMemberReport,
+    OrganizationMemberSummary,
+    OrganizationPublic,
+    OrganizationTaskAssignment,
     ParseJob,
     ResearchDashboardResponse,
     ResearchBlindReviewAnswer,
@@ -23,6 +30,7 @@ from .models import (
     ResearchScoreAgreement,
     ResearchMetric,
     SessionSummary,
+    SpeechConfig,
     TokenUsageRecord,
     UserPublic,
     WeakPointSummary,
@@ -39,6 +47,8 @@ from .security import (
     token_storage_key,
     validate_api_provider,
     validate_api_config_parts,
+    validate_speech_config_parts,
+    validate_speech_config_kind,
 )
 from .secrets import decrypt_secret, encrypt_secret, secret_is_encrypted
 
@@ -129,7 +139,39 @@ class SessionStore:
                         role text not null,
                         is_active integer not null,
                         created_at text not null,
-                        updated_at text not null
+                        updated_at text not null,
+                        password_changed_at text,
+                        default_credentials_seeded integer not null default 0
+                    )
+                    """
+                )
+            )
+            connection.execute(
+                self._sql(
+                    """
+                    create table if not exists organizations (
+                        id text primary key,
+                        code text not null unique,
+                        name text not null,
+                        owner_user_id text not null,
+                        created_at text not null,
+                        updated_at text not null,
+                        foreign key(owner_user_id) references users(id)
+                    )
+                    """
+                )
+            )
+            connection.execute(
+                self._sql(
+                    """
+                    create table if not exists organization_memberships (
+                        organization_id text not null,
+                        user_id text not null,
+                        role text not null,
+                        joined_at text not null,
+                        primary key(organization_id, user_id),
+                        foreign key(organization_id) references organizations(id),
+                        foreign key(user_id) references users(id)
                     )
                     """
                 )
@@ -154,11 +196,86 @@ class SessionStore:
                     create table if not exists sessions (
                         id text primary key,
                         user_id text not null default '',
+                        organization_id text,
+                        task_id text,
+                        visibility text not null default 'personal',
                         material_title text not null,
                         payload text not null,
                         created_at text not null,
                         updated_at text not null,
                         foreign key(user_id) references users(id)
+                    )
+                    """
+                )
+            )
+            connection.execute(
+                self._sql(
+                    """
+                    create table if not exists organization_learning_tasks (
+                        id text primary key,
+                        organization_id text not null,
+                        creator_user_id text not null,
+                        title text not null,
+                        description text not null default '',
+                        template_session_id text not null,
+                        material_title text not null,
+                        created_at text not null,
+                        updated_at text not null,
+                        foreign key(organization_id) references organizations(id),
+                        foreign key(creator_user_id) references users(id)
+                    )
+                    """
+                )
+            )
+            connection.execute(
+                self._sql(
+                    """
+                    create table if not exists organization_task_assignments (
+                        id text primary key,
+                        task_id text not null,
+                        organization_id text not null,
+                        user_id text not null,
+                        status text not null,
+                        session_id text,
+                        assigned_at text not null,
+                        started_at text,
+                        completed_at text,
+                        unique(task_id, user_id),
+                        foreign key(task_id) references organization_learning_tasks(id),
+                        foreign key(organization_id) references organizations(id),
+                        foreign key(user_id) references users(id)
+                    )
+                    """
+                )
+            )
+            connection.execute(
+                self._sql(
+                    """
+                    create table if not exists organization_knowledge_items (
+                        id text primary key,
+                        organization_id text not null,
+                        uploader_user_id text not null,
+                        title text not null,
+                        chunk_count integer not null default 0,
+                        created_at text not null,
+                        updated_at text not null,
+                        foreign key(organization_id) references organizations(id),
+                        foreign key(uploader_user_id) references users(id)
+                    )
+                    """
+                )
+            )
+            connection.execute(
+                self._sql(
+                    """
+                    create table if not exists organization_knowledge_chunks (
+                        id text primary key,
+                        item_id text not null,
+                        organization_id text not null,
+                        chunk_index integer not null,
+                        text text not null,
+                        foreign key(item_id) references organization_knowledge_items(id),
+                        foreign key(organization_id) references organizations(id)
                     )
                     """
                 )
@@ -173,6 +290,27 @@ class SessionStore:
                         api_key text not null,
                         model text not null,
                         is_active integer not null,
+                        created_at text not null,
+                        updated_at text not null
+                    )
+                    """
+                )
+            )
+            connection.execute(
+                self._sql(
+                    """
+                    create table if not exists speech_configs (
+                        id text primary key,
+                        kind text not null,
+                        provider text not null,
+                        base_url text not null,
+                        api_key text not null,
+                        model text not null,
+                        path text not null,
+                        is_active integer not null,
+                        voice text not null default '',
+                        language text not null default '',
+                        response_format text not null default '',
                         created_at text not null,
                         updated_at text not null
                     )
@@ -258,6 +396,12 @@ class SessionStore:
                 )
             )
             self._ensure_column(connection, "sessions", "user_id", "text not null default ''")
+            self._ensure_column(connection, "sessions", "organization_id", "text")
+            self._ensure_column(connection, "sessions", "task_id", "text")
+            self._ensure_column(connection, "sessions", "visibility", "text not null default 'personal'")
+            self._ensure_column(connection, "users", "updated_at", "text not null default ''")
+            self._ensure_column(connection, "users", "password_changed_at", "text")
+            self._ensure_column(connection, "users", "default_credentials_seeded", "integer not null default 0")
             self._ensure_column(connection, "auth_tokens", "last_reauth_at", "text not null default ''")
             self._ensure_column(connection, "auth_tokens", "expires_at", "text not null default ''")
             connection.execute(
@@ -273,7 +417,28 @@ class SessionStore:
                 self._sql("create index if not exists idx_sessions_user_id on sessions(user_id)")
             )
             connection.execute(
+                self._sql("create index if not exists idx_sessions_organization_id on sessions(organization_id, updated_at)")
+            )
+            connection.execute(
+                self._sql("create index if not exists idx_sessions_task_id on sessions(task_id)")
+            )
+            connection.execute(
                 self._sql("create index if not exists idx_tokens_user_id on auth_tokens(user_id)")
+            )
+            connection.execute(
+                self._sql("create index if not exists idx_memberships_user_id on organization_memberships(user_id)")
+            )
+            connection.execute(
+                self._sql("create index if not exists idx_memberships_org_role on organization_memberships(organization_id, role)")
+            )
+            connection.execute(
+                self._sql("create index if not exists idx_org_tasks_org on organization_learning_tasks(organization_id, updated_at)")
+            )
+            connection.execute(
+                self._sql("create index if not exists idx_org_assignments_user on organization_task_assignments(user_id, assigned_at)")
+            )
+            connection.execute(
+                self._sql("create index if not exists idx_org_knowledge_org on organization_knowledge_items(organization_id, updated_at)")
             )
             connection.execute(
                 self._sql("create index if not exists idx_parse_jobs_user_id on parse_jobs(user_id, updated_at)")
@@ -291,6 +456,9 @@ class SessionStore:
                 self._sql("create index if not exists idx_llm_token_usage_created_at on llm_token_usage(created_at)")
             )
             connection.execute(
+                self._sql("create index if not exists idx_speech_configs_kind_active on speech_configs(kind, is_active, updated_at)")
+            )
+            connection.execute(
                 self._sql("create index if not exists idx_research_records_study_group on research_experiment_records(study_id, group_label)")
             )
             connection.execute(
@@ -300,6 +468,7 @@ class SessionStore:
                 "create unique index if not exists idx_users_username_lower on users(lower(username))"
             )
             self._encrypt_plain_api_keys(connection)
+            self._encrypt_plain_speech_api_keys(connection)
 
     def _ensure_column(
         self,
@@ -329,6 +498,17 @@ class SessionStore:
                 (encrypt_secret(api_key, self.db_path or ""), row["id"]),
             )
 
+    def _encrypt_plain_speech_api_keys(self, connection) -> None:
+        rows = connection.execute(self._sql("select id, api_key from speech_configs")).fetchall()
+        for row in rows:
+            api_key = row["api_key"]
+            if not api_key or secret_is_encrypted(api_key):
+                continue
+            connection.execute(
+                self._sql("update speech_configs set api_key = ? where id = ?"),
+                (encrypt_secret(api_key, self.db_path or ""), row["id"]),
+            )
+
     def save(self, session: LearningSession) -> LearningSession:
         return self.save_session(session)
 
@@ -339,10 +519,14 @@ class SessionStore:
             connection.execute(
                 self._sql(
                     """
-                    insert into sessions (id, user_id, material_title, payload, created_at, updated_at)
-                    values (?, ?, ?, ?, ?, ?)
+                    insert into sessions
+                        (id, user_id, organization_id, task_id, visibility, material_title, payload, created_at, updated_at)
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     on conflict(id) do update set
                         user_id = excluded.user_id,
+                        organization_id = excluded.organization_id,
+                        task_id = excluded.task_id,
+                        visibility = excluded.visibility,
                         material_title = excluded.material_title,
                         payload = excluded.payload,
                         updated_at = excluded.updated_at
@@ -351,6 +535,9 @@ class SessionStore:
                 (
                     session.id,
                     session.user_id,
+                    session.organization_id,
+                    session.task_id,
+                    session.visibility,
                     session.material_title,
                     payload,
                     session.created_at.isoformat(),
@@ -363,7 +550,7 @@ class SessionStore:
     def get(self, session_id: str) -> LearningSession | None:
         with self._connect() as connection:
             row = connection.execute(
-                self._sql("select payload, user_id from sessions where id = ?"),
+                self._sql("select payload, user_id, organization_id, task_id, visibility from sessions where id = ?"),
                 (session_id,),
             ).fetchone()
         if row is None:
@@ -374,12 +561,12 @@ class SessionStore:
         with self._connect() as connection:
             if user_id is None:
                 row = connection.execute(
-                    self._sql("select payload, user_id from sessions where id = ?"),
+                    self._sql("select payload, user_id, organization_id, task_id, visibility from sessions where id = ?"),
                     (session_id,),
                 ).fetchone()
             else:
                 row = connection.execute(
-                    self._sql("select payload, user_id from sessions where id = ? and user_id = ?"),
+                    self._sql("select payload, user_id, organization_id, task_id, visibility from sessions where id = ? and user_id = ?"),
                     (session_id, user_id),
                 ).fetchone()
         if row is None:
@@ -401,11 +588,11 @@ class SessionStore:
         with self._connect() as connection:
             if user_id is None:
                 rows = connection.execute(
-                    self._sql("select payload, user_id from sessions order by updated_at desc limit 60")
+                    self._sql("select payload, user_id, organization_id, task_id, visibility from sessions order by updated_at desc limit 60")
                 ).fetchall()
             else:
                 rows = connection.execute(
-                    self._sql("select payload, user_id from sessions where user_id = ? order by updated_at desc limit 60"),
+                    self._sql("select payload, user_id, organization_id, task_id, visibility from sessions where user_id = ? order by updated_at desc limit 60"),
                     (user_id,),
                 ).fetchall()
 
@@ -427,6 +614,10 @@ class SessionStore:
     def _row_to_session(self, row) -> LearningSession:
         payload = json.loads(row["payload"])
         payload.setdefault("user_id", row["user_id"] or "")
+        row_get = row.get if hasattr(row, "get") else lambda _key, default=None: default
+        payload.setdefault("organization_id", row_get("organization_id"))
+        payload.setdefault("task_id", row_get("task_id"))
+        payload.setdefault("visibility", row_get("visibility") or "personal")
         return LearningSession.model_validate(payload)
 
     def _prune_sessions_for_user(self, connection, user_id: str, keep_session_id: str) -> None:
@@ -457,22 +648,61 @@ class SessionStore:
         role: str,
         is_active: bool,
         created_at: str,
+        password_changed_at: str | None = None,
+        default_credentials_seeded: bool = False,
     ) -> UserPublic:
         normalized_username = normalize_username(username)
         with self._lock, self._connect() as connection:
             connection.execute(
                 self._sql(
                     """
-                    insert into users (id, username, password_hash, role, is_active, created_at, updated_at)
-                    values (?, ?, ?, ?, ?, ?, ?)
+                    insert into users
+                        (id, username, password_hash, role, is_active, created_at, updated_at,
+                         password_changed_at, default_credentials_seeded)
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """
                 ),
-                (user_id, normalized_username, password_hash, role, int(is_active), created_at, created_at),
+                (
+                    user_id,
+                    normalized_username,
+                    password_hash,
+                    role,
+                    int(is_active),
+                    created_at,
+                    created_at,
+                    password_changed_at,
+                    int(default_credentials_seeded),
+                ),
             )
         user = self.get_user_by_id(user_id)
         if user is None:
             raise RuntimeError("用户创建失败")
         return user
+
+    def create_default_admin_if_empty(
+        self,
+        user_id: str,
+        username: str,
+        password_hash: str,
+        created_at: str,
+    ) -> UserPublic | None:
+        normalized_username = normalize_username(username)
+        with self._lock, self._connect() as connection:
+            has_users = connection.execute(self._sql("select 1 from users limit 1")).fetchone() is not None
+            if has_users:
+                return None
+            connection.execute(
+                self._sql(
+                    """
+                    insert into users
+                        (id, username, password_hash, role, is_active, created_at, updated_at,
+                         password_changed_at, default_credentials_seeded)
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """
+                ),
+                (user_id, normalized_username, password_hash, "admin", 1, created_at, created_at, None, 1),
+            )
+        return self.get_user_by_id(user_id)
 
     def create_user_atomic(
         self,
@@ -497,11 +727,13 @@ class SessionStore:
             connection.execute(
                 self._sql(
                     """
-                    insert into users (id, username, password_hash, role, is_active, created_at, updated_at)
-                    values (?, ?, ?, ?, ?, ?, ?)
+                    insert into users
+                        (id, username, password_hash, role, is_active, created_at, updated_at,
+                         password_changed_at, default_credentials_seeded)
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """
                 ),
-                (user_id, normalized_username, password_hash, role, int(is_active), created_at, created_at),
+                (user_id, normalized_username, password_hash, role, int(is_active), created_at, created_at, created_at, 0),
             )
         user = self.get_user_by_id(user_id)
         if user is None:
@@ -555,6 +787,413 @@ class SessionStore:
                 (next_role, int(next_active), updated_at, user_id),
             )
         return self.get_user_by_id(user_id)
+
+    def update_account(
+        self,
+        user_id: str,
+        username: str | None,
+        password_hash: str | None,
+        password_changed_at: str | None,
+        updated_at: str,
+    ) -> UserPublic | None:
+        current = self.get_user_by_id(user_id)
+        if current is None:
+            return None
+        next_username = normalize_username(username) if username is not None else current.username
+        with self._lock, self._connect() as connection:
+            if next_username != current.username:
+                existing = connection.execute(
+                    self._sql("select id from users where lower(username) = lower(?) and id != ?"),
+                    (next_username, user_id),
+                ).fetchone()
+                if existing is not None:
+                    raise ValueError("该账号无法使用")
+            if password_hash is None:
+                connection.execute(
+                    self._sql("update users set username = ?, updated_at = ? where id = ?"),
+                    (next_username, updated_at, user_id),
+                )
+            else:
+                connection.execute(
+                    self._sql(
+                        """
+                        update users
+                        set username = ?,
+                            password_hash = ?,
+                            password_changed_at = ?,
+                            default_credentials_seeded = 0,
+                            updated_at = ?
+                        where id = ?
+                        """
+                    ),
+                    (next_username, password_hash, password_changed_at, updated_at, user_id),
+                )
+        return self.get_user_by_id(user_id)
+
+    def create_organization(
+        self,
+        organization_id: str,
+        code: str,
+        name: str,
+        owner_user_id: str,
+        created_at: str,
+    ) -> OrganizationPublic:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                self._sql(
+                    """
+                    insert into organizations (id, code, name, owner_user_id, created_at, updated_at)
+                    values (?, ?, ?, ?, ?, ?)
+                    """
+                ),
+                (organization_id, code, name.strip(), owner_user_id, created_at, created_at),
+            )
+            connection.execute(
+                self._sql(
+                    """
+                    insert into organization_memberships (organization_id, user_id, role, joined_at)
+                    values (?, ?, ?, ?)
+                    on conflict(organization_id, user_id) do update set role = excluded.role
+                    """
+                ),
+                (organization_id, owner_user_id, "org_manager", created_at),
+            )
+        organization = self.get_organization_by_id(organization_id)
+        if organization is None:
+            raise RuntimeError("组织创建失败")
+        return organization
+
+    def add_organization_member(
+        self,
+        organization_id: str,
+        user_id: str,
+        role: str,
+        joined_at: str,
+    ) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                self._sql(
+                    """
+                    insert into organization_memberships (organization_id, user_id, role, joined_at)
+                    values (?, ?, ?, ?)
+                    on conflict(organization_id, user_id) do update set role = excluded.role
+                    """
+                ),
+                (organization_id, user_id, role, joined_at),
+            )
+
+    def clear_user_organization_memberships(self, user_id: str) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                self._sql("delete from organization_memberships where user_id = ?"),
+                (user_id,),
+            )
+
+    def get_organization_by_id(self, organization_id: str) -> OrganizationPublic | None:
+        with self._connect() as connection:
+            row = connection.execute(self._sql("select * from organizations where id = ?"), (organization_id,)).fetchone()
+        if row is None:
+            return None
+        return self._row_to_organization(row)
+
+    def get_organization_by_code(self, code: str) -> OrganizationPublic | None:
+        normalized_code = code.strip().upper()
+        with self._connect() as connection:
+            row = connection.execute(
+                self._sql("select * from organizations where upper(code) = upper(?)"),
+                (normalized_code,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_organization(row)
+
+    def list_organizations(self, limit: int = 200) -> list[OrganizationPublic]:
+        actual_limit = max(1, min(limit, 500))
+        with self._connect() as connection:
+            rows = connection.execute(
+                self._sql("select * from organizations order by updated_at desc limit ?"),
+                (actual_limit,),
+            ).fetchall()
+        return [self._row_to_organization(row) for row in rows]
+
+    def get_user_membership(self, user_id: str) -> dict[str, str] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                self._sql(
+                    """
+                    select organization_memberships.organization_id, organization_memberships.role,
+                           organizations.name, organizations.code
+                    from organization_memberships
+                    join organizations on organizations.id = organization_memberships.organization_id
+                    where organization_memberships.user_id = ?
+                    order by organization_memberships.joined_at desc
+                    limit 1
+                    """
+                ),
+                (user_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "organization_id": row["organization_id"],
+            "role": row["role"],
+            "organization_name": row["name"],
+            "organization_code": row["code"],
+        }
+
+    def current_organization_for_user(self, user_id: str) -> OrganizationPublic | None:
+        membership = self.get_user_membership(user_id)
+        if membership is None:
+            return None
+        organization = self.get_organization_by_id(membership["organization_id"])
+        if organization is None:
+            return None
+        return organization.model_copy(update={"current_user_role": membership["role"]})
+
+    def organization_member_ids(self, organization_id: str, role: str | None = None) -> list[str]:
+        with self._connect() as connection:
+            if role is None:
+                rows = connection.execute(
+                    self._sql("select user_id from organization_memberships where organization_id = ?"),
+                    (organization_id,),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    self._sql("select user_id from organization_memberships where organization_id = ? and role = ?"),
+                    (organization_id, role),
+                ).fetchall()
+        return [row["user_id"] for row in rows]
+
+    def list_organization_members(self, organization_id: str) -> list[OrganizationMemberSummary]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                self._sql(
+                    """
+                    select users.*, organization_memberships.joined_at
+                    from organization_memberships
+                    join users on users.id = organization_memberships.user_id
+                    where organization_memberships.organization_id = ?
+                    order by organization_memberships.joined_at desc
+                    """
+                ),
+                (organization_id,),
+            ).fetchall()
+        summaries: list[OrganizationMemberSummary] = []
+        for row in rows:
+            session_summaries = self._learning_summary_for_user(row["id"], organization_id)
+            summaries.append(
+                OrganizationMemberSummary(
+                    user=self._row_to_user(row),
+                    joined_at=row["joined_at"],
+                    **session_summaries,
+                )
+            )
+        return summaries
+
+    def create_organization_task(
+        self,
+        task_id: str,
+        organization_id: str,
+        creator_user_id: str,
+        title: str,
+        description: str,
+        template_session_id: str,
+        material_title: str,
+        assignee_user_ids: list[str],
+        assignment_id_factory: Callable[[], str],
+        created_at: str,
+    ) -> tuple[OrganizationLearningTask, list[OrganizationTaskAssignment]]:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                self._sql(
+                    """
+                    insert into organization_learning_tasks
+                        (id, organization_id, creator_user_id, title, description,
+                         template_session_id, material_title, created_at, updated_at)
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """
+                ),
+                (
+                    task_id,
+                    organization_id,
+                    creator_user_id,
+                    title.strip(),
+                    description.strip(),
+                    template_session_id,
+                    material_title.strip(),
+                    created_at,
+                    created_at,
+                ),
+            )
+            for user_id in assignee_user_ids:
+                connection.execute(
+                    self._sql(
+                        """
+                        insert into organization_task_assignments
+                            (id, task_id, organization_id, user_id, status, session_id, assigned_at, started_at, completed_at)
+                        values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        on conflict(task_id, user_id) do nothing
+                        """
+                    ),
+                    (assignment_id_factory(), task_id, organization_id, user_id, "assigned", None, created_at, None, None),
+                )
+        task = self.get_organization_task(task_id)
+        assignments = self.list_task_assignments_for_task(task_id)
+        if task is None:
+            raise RuntimeError("组织任务创建失败")
+        return task, assignments
+
+    def get_organization_task(self, task_id: str) -> OrganizationLearningTask | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                self._sql("select * from organization_learning_tasks where id = ?"),
+                (task_id,),
+            ).fetchone()
+        return self._row_to_org_task(row) if row is not None else None
+
+    def list_task_assignments_for_task(self, task_id: str) -> list[OrganizationTaskAssignment]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                self._sql("select * from organization_task_assignments where task_id = ? order by assigned_at desc"),
+                (task_id,),
+            ).fetchall()
+        return [self._row_to_org_assignment(row) for row in rows]
+
+    def list_assignments_for_user(self, user_id: str) -> list[OrganizationTaskAssignment]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                self._sql(
+                    """
+                    select * from organization_task_assignments
+                    where user_id = ?
+                    order by assigned_at desc
+                    limit 200
+                    """
+                ),
+                (user_id,),
+            ).fetchall()
+        assignments = [self._row_to_org_assignment(row) for row in rows]
+        return [
+            assignment.model_copy(update={"task": self.get_organization_task(assignment.task_id)})
+            for assignment in assignments
+        ]
+
+    def get_assignment_for_user(self, task_id: str, user_id: str) -> OrganizationTaskAssignment | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                self._sql("select * from organization_task_assignments where task_id = ? and user_id = ?"),
+                (task_id, user_id),
+            ).fetchone()
+        if row is None:
+            return None
+        assignment = self._row_to_org_assignment(row)
+        return assignment.model_copy(update={"task": self.get_organization_task(assignment.task_id)})
+
+    def mark_assignment_started(self, task_id: str, user_id: str, session_id: str, started_at: str) -> OrganizationTaskAssignment | None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                self._sql(
+                    """
+                    update organization_task_assignments
+                    set status = 'started', session_id = ?, started_at = coalesce(started_at, ?)
+                    where task_id = ? and user_id = ?
+                    """
+                ),
+                (session_id, started_at, task_id, user_id),
+            )
+        return self.get_assignment_for_user(task_id, user_id)
+
+    def create_organization_knowledge_item(
+        self,
+        item_id: str,
+        organization_id: str,
+        uploader_user_id: str,
+        title: str,
+        chunks: list[str],
+        chunk_id_factory: Callable[[], str],
+        created_at: str,
+    ) -> OrganizationKnowledgeItem:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                self._sql(
+                    """
+                    insert into organization_knowledge_items
+                        (id, organization_id, uploader_user_id, title, chunk_count, created_at, updated_at)
+                    values (?, ?, ?, ?, ?, ?, ?)
+                    """
+                ),
+                (item_id, organization_id, uploader_user_id, title.strip(), len(chunks), created_at, created_at),
+            )
+            for index, chunk in enumerate(chunks):
+                connection.execute(
+                    self._sql(
+                        """
+                        insert into organization_knowledge_chunks
+                            (id, item_id, organization_id, chunk_index, text)
+                        values (?, ?, ?, ?, ?)
+                        """
+                    ),
+                    (chunk_id_factory(), item_id, organization_id, index, chunk),
+                )
+        item = self.get_organization_knowledge_item(item_id)
+        if item is None:
+            raise RuntimeError("组织知识库保存失败")
+        return item
+
+    def get_organization_knowledge_item(self, item_id: str) -> OrganizationKnowledgeItem | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                self._sql("select * from organization_knowledge_items where id = ?"),
+                (item_id,),
+            ).fetchone()
+        return self._row_to_org_knowledge_item(row) if row is not None else None
+
+    def list_organization_knowledge(self, organization_id: str) -> list[OrganizationKnowledgeItem]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                self._sql(
+                    """
+                    select * from organization_knowledge_items
+                    where organization_id = ?
+                    order by updated_at desc
+                    limit 200
+                    """
+                ),
+                (organization_id,),
+            ).fetchall()
+        return [self._row_to_org_knowledge_item(row) for row in rows]
+
+    def delete_organization_knowledge_item(self, organization_id: str, item_id: str) -> bool:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                self._sql("delete from organization_knowledge_chunks where organization_id = ? and item_id = ?"),
+                (organization_id, item_id),
+            )
+            cursor = connection.execute(
+                self._sql("delete from organization_knowledge_items where organization_id = ? and id = ?"),
+                (organization_id, item_id),
+            )
+        return cursor.rowcount > 0
+
+    def organization_knowledge_context(self, organization_id: str, limit: int = 6) -> str:
+        with self._connect() as connection:
+            rows = connection.execute(
+                self._sql(
+                    """
+                    select organization_knowledge_items.title, organization_knowledge_chunks.text
+                    from organization_knowledge_chunks
+                    join organization_knowledge_items on organization_knowledge_items.id = organization_knowledge_chunks.item_id
+                    where organization_knowledge_chunks.organization_id = ?
+                    order by organization_knowledge_items.updated_at desc, organization_knowledge_chunks.chunk_index asc
+                    limit ?
+                    """
+                ),
+                (organization_id, max(1, min(limit, 20))),
+            ).fetchall()
+        lines = []
+        for row in rows:
+            lines.append(f"【{row['title']}】{row['text']}")
+        return "\n".join(lines)
 
     def create_token(self, token: str, user_id: str, created_at: str, remember_me: bool = False) -> None:
         expires_at = (
@@ -1018,6 +1657,178 @@ class SessionStore:
             cursor = connection.execute(self._sql("delete from api_configs where id = ?"), (config_id,))
         return cursor.rowcount > 0
 
+    def upsert_speech_config(
+        self,
+        config_id: str,
+        kind: str,
+        provider: str,
+        base_url: str,
+        api_key: str,
+        model: str,
+        path: str,
+        is_active: bool,
+        voice: str | None,
+        language: str | None,
+        response_format: str | None,
+        created_at: str,
+        updated_at: str,
+    ) -> SpeechConfig:
+        (
+            normalized_kind,
+            normalized_provider,
+            normalized_base_url,
+            normalized_api_key,
+            normalized_model,
+            normalized_path,
+            normalized_voice,
+            normalized_language,
+            normalized_response_format,
+        ) = validate_speech_config_parts(
+            kind,
+            provider,
+            base_url,
+            api_key,
+            model,
+            path,
+            voice,
+            language,
+            response_format,
+        )
+        stored_api_key = encrypt_secret(normalized_api_key, self.db_path or "")
+        with self._lock, self._connect() as connection:
+            if is_active:
+                connection.execute(
+                    self._sql("update speech_configs set is_active = 0 where kind = ? and id != ?"),
+                    (normalized_kind, config_id),
+                )
+            existing = connection.execute(
+                self._sql("select created_at from speech_configs where id = ?"),
+                (config_id,),
+            ).fetchone()
+            actual_created_at = existing["created_at"] if existing else created_at
+            connection.execute(
+                self._sql(
+                    """
+                    insert into speech_configs
+                        (id, kind, provider, base_url, api_key, model, path, is_active, voice, language, response_format, created_at, updated_at)
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    on conflict(id) do update set
+                        kind = excluded.kind,
+                        provider = excluded.provider,
+                        base_url = excluded.base_url,
+                        api_key = excluded.api_key,
+                        model = excluded.model,
+                        path = excluded.path,
+                        is_active = excluded.is_active,
+                        voice = excluded.voice,
+                        language = excluded.language,
+                        response_format = excluded.response_format,
+                        updated_at = excluded.updated_at
+                    """
+                ),
+                (
+                    config_id,
+                    normalized_kind,
+                    normalized_provider,
+                    normalized_base_url,
+                    stored_api_key,
+                    normalized_model,
+                    normalized_path,
+                    int(is_active),
+                    normalized_voice,
+                    normalized_language,
+                    normalized_response_format,
+                    actual_created_at,
+                    updated_at,
+                ),
+            )
+        config = self.get_speech_config(config_id)
+        if config is None:
+            raise RuntimeError("语音配置保存失败")
+        return config
+
+    def get_speech_config(self, config_id: str) -> SpeechConfig | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                self._sql("select * from speech_configs where id = ?"),
+                (config_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_speech_config(row)
+
+    def get_speech_config_secret(self, config_id: str) -> str | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                self._sql("select api_key from speech_configs where id = ?"),
+                (config_id,),
+            ).fetchone()
+        return None if row is None else decrypt_secret(row["api_key"], self.db_path or "")
+
+    def list_speech_configs(self, limit: int = 100) -> list[SpeechConfig]:
+        actual_limit = max(1, min(limit, 200))
+        with self._connect() as connection:
+            rows = connection.execute(
+                self._sql("select * from speech_configs order by kind asc, updated_at desc limit ?"),
+                (actual_limit,),
+            ).fetchall()
+        return [self._row_to_speech_config(row) for row in rows]
+
+    def get_active_speech_config_secret_record(self, kind: str) -> dict[str, str] | None:
+        normalized_kind = validate_speech_config_kind(kind)
+        with self._connect() as connection:
+            row = connection.execute(
+                self._sql(
+                    """
+                    select * from speech_configs
+                    where kind = ? and is_active = 1
+                    order by updated_at desc
+                    limit 1
+                    """
+                ),
+                (normalized_kind,),
+            ).fetchone()
+        if row is None:
+            return None
+        (
+            config_kind,
+            provider,
+            base_url,
+            api_key,
+            model,
+            path,
+            voice,
+            language,
+            response_format,
+        ) = validate_speech_config_parts(
+            row["kind"],
+            row["provider"],
+            row["base_url"],
+            decrypt_secret(row["api_key"], self.db_path or ""),
+            row["model"],
+            row["path"],
+            row["voice"],
+            row["language"],
+            row["response_format"],
+        )
+        return {
+            "id": row["id"],
+            "kind": config_kind,
+            "provider": provider,
+            "base_url": base_url,
+            "api_key": api_key,
+            "model": model,
+            "path": path,
+            "voice": voice,
+            "language": language,
+            "response_format": response_format,
+        }
+
+    def delete_speech_config(self, config_id: str) -> bool:
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(self._sql("delete from speech_configs where id = ?"), (config_id,))
+        return cursor.rowcount > 0
+
     def create_audit_log(
         self,
         log_id: str,
@@ -1094,10 +1905,14 @@ class SessionStore:
                 ),
             )
 
-    def research_dashboard(self) -> ResearchDashboardResponse:
-        sessions = self._all_sessions_for_research()
+    def research_dashboard(self, organization_id: str | None = None) -> ResearchDashboardResponse:
+        sessions = self._all_sessions_for_research(organization_id)
         experiment_records = self.list_research_experiment_records(limit=500)
-        usage_total, usage_today = self._token_usage_totals()
+        usage_total, usage_today = (
+            self._token_usage_totals_for_organization(organization_id)
+            if organization_id
+            else self._token_usage_totals()
+        )
         total_nodes = sum(len(session.nodes) for session in sessions)
         mastered_nodes = sum(1 for session in sessions for node in session.nodes if node.status == "mastered")
         total_messages = sum(len(session.messages) for session in sessions)
@@ -1256,9 +2071,9 @@ class SessionStore:
             ).fetchall()
         return [self._row_to_research_experiment_record(row) for row in rows]
 
-    def export_blind_review_answers(self, limit: int = 2000) -> list[ResearchBlindReviewAnswer]:
+    def export_blind_review_answers(self, limit: int = 2000, organization_id: str | None = None, user_id: str | None = None) -> list[ResearchBlindReviewAnswer]:
         answers: list[ResearchBlindReviewAnswer] = []
-        for session in self._all_sessions_for_research():
+        for session in self._all_sessions_for_research(organization_id=organization_id, user_id=user_id):
             node_by_id = {node.id: node for node in session.nodes}
             for node_id, answer_map in session.feynman_answers.items():
                 node = node_by_id.get(node_id)
@@ -1288,11 +2103,66 @@ class SessionStore:
                         return answers
         return answers
 
-    def _all_sessions_for_research(self) -> list[LearningSession]:
+    def _all_sessions_for_research(
+        self,
+        organization_id: str | None = None,
+        user_id: str | None = None,
+    ) -> list[LearningSession]:
         with self._connect() as connection:
-            rows = connection.execute(
-                self._sql("select payload, user_id from sessions order by updated_at desc limit 500")
-            ).fetchall()
+            if organization_id is not None and user_id is not None:
+                rows = connection.execute(
+                    self._sql(
+                        """
+                        select payload, user_id, organization_id, task_id, visibility
+                        from sessions
+                        where organization_id = ? and user_id = ?
+                          and visibility != 'organization_task_template'
+                        order by updated_at desc
+                        limit 500
+                        """
+                    ),
+                    (organization_id, user_id),
+                ).fetchall()
+            elif organization_id is not None:
+                rows = connection.execute(
+                    self._sql(
+                        """
+                        select payload, user_id, organization_id, task_id, visibility
+                        from sessions
+                        where organization_id = ?
+                          and visibility != 'organization_task_template'
+                        order by updated_at desc
+                        limit 500
+                        """
+                    ),
+                    (organization_id,),
+                ).fetchall()
+            elif user_id is not None:
+                rows = connection.execute(
+                    self._sql(
+                        """
+                        select payload, user_id, organization_id, task_id, visibility
+                        from sessions
+                        where user_id = ?
+                          and visibility != 'organization_task_template'
+                        order by updated_at desc
+                        limit 500
+                        """
+                    ),
+                    (user_id,),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    self._sql(
+                        """
+                        select payload, user_id, organization_id, task_id, visibility
+                        from sessions
+                        where visibility != 'organization_task_template'
+                        order by updated_at desc
+                        limit 500
+                        """
+                    )
+                ).fetchall()
         return [self._row_to_session(row) for row in rows]
 
     def _token_usage_totals(self) -> tuple[int, int]:
@@ -1335,15 +2205,149 @@ class SessionStore:
             for row in rows
         }
 
+    def _token_usage_totals_for_organization(self, organization_id: str) -> tuple[int, int]:
+        user_ids = self.organization_member_ids(organization_id)
+        if not user_ids:
+            return 0, 0
+        with self._connect() as connection:
+            totals = self._token_usage_totals_for_users(connection, user_ids)
+        return (
+            sum(item[0] for item in totals.values()),
+            sum(item[1] for item in totals.values()),
+        )
+
+    def _learning_summary_for_user(self, user_id: str, organization_id: str | None = None) -> dict[str, int | float]:
+        sessions = self._all_sessions_for_research(organization_id=organization_id, user_id=user_id)
+        node_count = sum(len(session.nodes) for session in sessions)
+        mastered_count = sum(1 for session in sessions for node in session.nodes if node.status == "mastered")
+        scores: list[int] = []
+        for session in sessions:
+            for assessment in session.feynman_assessments.values():
+                scores.extend(clamp_score(item.value) for item in assessment.dimension_scores)
+            for profile in session.node_profiles.values():
+                scores.extend(clamp_score(value) for value in profile.dimension_scores.values())
+        return {
+            "session_count": len(sessions),
+            "mastered_count": mastered_count,
+            "node_count": node_count,
+            "average_feynman_score": round(sum(scores) / len(scores), 1) if scores else 0.0,
+        }
+
+    def organization_member_report(self, organization_id: str, user_id: str) -> OrganizationMemberReport | None:
+        membership = self.get_user_membership(user_id)
+        if membership is None or membership["organization_id"] != organization_id:
+            return None
+        user = self.get_user_by_id(user_id)
+        if user is None:
+            return None
+        sessions = self._all_sessions_for_research(organization_id=organization_id, user_id=user_id)
+        summaries = [
+            SessionSummary(
+                id=session.id,
+                material_title=session.material_title,
+                active_node_id=session.active_node_id,
+                mastered_count=sum(1 for node in session.nodes if node.status == "mastered"),
+                node_count=len(session.nodes),
+                updated_at=session.updated_at,
+            )
+            for session in sessions
+        ]
+        dimension_scores = [
+            score
+            for session in sessions
+            for assessment in session.feynman_assessments.values()
+            for score in assessment.dimension_scores
+        ]
+        summary = self._learning_summary_for_user(user_id, organization_id)
+        return OrganizationMemberReport(
+            user=user,
+            sessions=summaries,
+            feynman_answers=self.export_blind_review_answers(organization_id=organization_id, user_id=user_id),
+            dimension_scores=dimension_scores,
+            mastered_count=int(summary["mastered_count"]),
+            node_count=int(summary["node_count"]),
+            average_feynman_score=float(summary["average_feynman_score"]),
+        )
+
     def _row_to_user(self, row, total_tokens: int = 0, today_tokens: int = 0) -> UserPublic:
+        row_get = row.get if hasattr(row, "get") else lambda _key, default=None: default
+        membership = self.get_user_membership(row["id"])
+        organization_id = membership["organization_id"] if membership else None
+        organization_name = membership["organization_name"] if membership else None
+        organization_code = membership["organization_code"] if membership else None
+        default_seeded = bool(row_get("default_credentials_seeded", 0))
+        password_changed_at = row_get("password_changed_at")
         return UserPublic(
             id=row["id"],
             username=row["username"],
             role=row["role"],
             is_active=bool(row["is_active"]),
             created_at=row["created_at"],
+            organization_id=organization_id,
+            organization_name=organization_name,
+            organization_code=organization_code,
+            default_credentials_seeded=default_seeded,
+            password_changed_at=password_changed_at,
+            security_notice=(
+                {"kind": "default_admin_credentials", "can_defer": True}
+                if default_seeded and not password_changed_at
+                else None
+            ),
             total_tokens=max(0, total_tokens),
             today_tokens=max(0, today_tokens),
+        )
+
+    def _row_to_organization(self, row) -> OrganizationPublic:
+        with self._connect() as connection:
+            count_row = connection.execute(
+                self._sql("select count(*) as count from organization_memberships where organization_id = ?"),
+                (row["id"],),
+            ).fetchone()
+        return OrganizationPublic(
+            id=row["id"],
+            code=row["code"],
+            name=row["name"],
+            owner_user_id=row["owner_user_id"],
+            member_count=int(count_row["count"] or 0) if count_row else 0,
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    def _row_to_org_task(self, row) -> OrganizationLearningTask:
+        return OrganizationLearningTask(
+            id=row["id"],
+            organization_id=row["organization_id"],
+            creator_user_id=row["creator_user_id"],
+            title=row["title"],
+            description=row["description"],
+            template_session_id=row["template_session_id"],
+            material_title=row["material_title"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    def _row_to_org_assignment(self, row) -> OrganizationTaskAssignment:
+        return OrganizationTaskAssignment(
+            id=row["id"],
+            task_id=row["task_id"],
+            organization_id=row["organization_id"],
+            user_id=row["user_id"],
+            status=row["status"],
+            session_id=row["session_id"],
+            assigned_at=row["assigned_at"],
+            started_at=row["started_at"],
+            completed_at=row["completed_at"],
+        )
+
+    def _row_to_org_knowledge_item(self, row) -> OrganizationKnowledgeItem:
+        return OrganizationKnowledgeItem(
+            id=row["id"],
+            organization_id=row["organization_id"],
+            uploader_user_id=row["uploader_user_id"],
+            title=row["title"],
+            chunk_count=int(row["chunk_count"] or 0),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
         )
 
     def _row_to_api_config(self, row) -> ApiConfig:
@@ -1354,6 +2358,23 @@ class SessionStore:
             api_key_masked=mask_secret(decrypt_secret(row["api_key"], self.db_path or "")),
             model=row["model"],
             is_active=bool(row["is_active"]),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    def _row_to_speech_config(self, row) -> SpeechConfig:
+        return SpeechConfig(
+            id=row["id"],
+            kind=validate_speech_config_kind(row["kind"]),
+            provider=safe_speech_provider_for_display(row["provider"]),
+            base_url=row["base_url"],
+            api_key_masked=mask_secret(decrypt_secret(row["api_key"], self.db_path or "")),
+            model=row["model"],
+            path=row["path"],
+            is_active=bool(row["is_active"]),
+            voice=row["voice"] or None,
+            language=row["language"] or None,
+            response_format=row["response_format"] or None,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
@@ -1416,6 +2437,11 @@ def safe_api_provider_for_display(provider: str) -> str:
     except ValueError:
         compact = "".join(char if char.isprintable() and not char.isspace() else "?" for char in str(provider))
         return f"invalid:{compact[:64] or 'unknown'}"
+
+
+def safe_speech_provider_for_display(provider: str) -> str:
+    compact = "".join(char if char.isprintable() and not char.isspace() else "?" for char in str(provider))
+    return compact[:80] or "unknown"
 
 
 def compact_session_for_storage(session: LearningSession) -> None:

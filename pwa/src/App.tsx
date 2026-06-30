@@ -1,5 +1,5 @@
 import { CSSProperties, ChangeEvent, DragEvent, FormEvent, useEffect, useRef, useState } from "react";
-import { BarChart3, BookOpen, Microscope, MessageSquare, Network, Settings, Sparkles, UploadCloud } from "lucide-react";
+import { BarChart3, BookOpen, Building2, ClipboardList, Microscope, MessageSquare, Network, Settings, Sparkles, UploadCloud } from "lucide-react";
 import { useV2Chat } from "./hooks/useV2Chat";
 import { useFeynman } from "./hooks/useFeynman";
 import { useParseJob } from "./hooks/useParseJob";
@@ -17,7 +17,9 @@ import { FeynmanStage } from "./stages/FeynmanStage";
 import { FlowStage } from "./stages/FlowStage";
 import { MapStage } from "./stages/MapStage";
 import { MasteryStage } from "./stages/MasteryStage";
+import { OrganizationStage } from "./stages/OrganizationStage";
 import { ResearchStage } from "./stages/ResearchStage";
+import { TasksStage } from "./stages/TasksStage";
 import { AUTH_SESSION_STORAGE_KEY, CHAT_SUBMIT_COOLDOWN_MS, LEGACY_TOKEN_STORAGE_KEY } from "./app/constants";
 import {
   UI_REVIEW_ADMIN_USERS,
@@ -39,6 +41,7 @@ import {
   UI_REVIEW_QUESTIONS,
   UI_REVIEW_RESEARCH_DASHBOARD,
   UI_REVIEW_SESSION_ID,
+  UI_REVIEW_SPEECH_CONFIGS,
   UI_REVIEW_STAGE,
   UI_REVIEW_USER,
 } from "./app/uiReviewFixtures";
@@ -54,21 +57,36 @@ import {
   updateLatestMentorInThread,
 } from "./app/sessionState";
 import {
+  AdminUserCreateInput,
+  AdminUserUpdateInput,
   ApiConfigInput,
+  SpeechConfigInput,
   createApiConfig,
+  createSpeechConfig,
+  createUser,
+  createOrganizationTask,
   createParseJob,
   deleteApiConfig,
+  deleteSpeechConfig,
+  deleteOrganizationKnowledge,
   deleteSession,
   exportBlindReviewAnswers,
   exportResearchExperiments,
   getSpeechCapabilities,
   getFeynmanQuestions,
+  getOrganizationDashboard,
+  getOrganizationMemberReport,
   getMe,
   getResearchDashboard,
   importResearchExperiments,
   getSession,
   LearningSession,
   listApiConfigs,
+  listOrganizations,
+  listSpeechConfigs,
+  listMyTasks,
+  listOrganizationKnowledge,
+  listOrganizationMembers,
   listSessions,
   listUsers,
   login,
@@ -80,13 +98,17 @@ import {
   SessionSummary,
   streamChatMessage,
   submitFeynman,
+  startMyTask,
   synthesizeSpeech,
   transcribeSpeech,
   updateApiConfig,
+  updateSpeechConfig,
+  updateMyAccount,
   updateSessionPersona,
   updateSessionTutorSettings,
   updateUser,
   uploadParseJob,
+  uploadOrganizationKnowledge,
 } from "./api";
 import type {
   ApiConfig,
@@ -95,15 +117,48 @@ import type {
   FeynmanQuestion,
   KnowledgeNode,
   Persona,
+  Organization,
+  OrganizationDashboard,
+  OrganizationKnowledgeItem,
+  OrganizationMemberReport,
+  OrganizationMemberSummary,
+  OrganizationTaskAssignment,
   ResearchDashboard,
   SpeechCapabilities,
+  SpeechConfig,
   Stage,
   TutorSettings,
   User,
+  UserRole,
 } from "./types";
 
 const INITIAL_TUTOR_PROMPT =
   "学习者刚进入这个知识节点，还没有回答。请你先提出第一个苏格拉底式起始问题：问题必须具体、容易开口、只聚焦当前节点的一个核心点。";
+
+function optionalTrimmed(value?: string) {
+  const trimmed = (value ?? "").trim();
+  return trimmed || undefined;
+}
+
+function normalizeAdminUserCreatePayload(payload: AdminUserCreateInput): AdminUserCreateInput {
+  return {
+    username: payload.username.trim(),
+    password: payload.password,
+    role: payload.role,
+    is_active: payload.is_active ?? true,
+    organization_name: optionalTrimmed(payload.organization_name),
+    organization_code: optionalTrimmed(payload.organization_code),
+  };
+}
+
+function normalizeAdminUserUpdatePayload(payload: AdminUserUpdateInput): AdminUserUpdateInput {
+  return {
+    role: payload.role,
+    is_active: payload.is_active,
+    organization_name: optionalTrimmed(payload.organization_name),
+    organization_code: optionalTrimmed(payload.organization_code),
+  };
+}
 
 function App() {
   const [token, setToken] = useState(() => {
@@ -145,7 +200,9 @@ function App() {
   const [error, setError] = useState("");
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [adminUsers, setAdminUsers] = useState<User[]>(() => (UI_REVIEW_STAGE === "admin" ? UI_REVIEW_ADMIN_USERS : []));
+  const [adminOrganizations, setAdminOrganizations] = useState<Organization[]>([]);
   const [apiConfigs, setApiConfigs] = useState<ApiConfig[]>(() => (UI_REVIEW_STAGE === "admin" ? UI_REVIEW_API_CONFIGS : []));
+  const [speechConfigs, setSpeechConfigs] = useState<SpeechConfig[]>(() => (UI_REVIEW_STAGE === "admin" ? UI_REVIEW_SPEECH_CONFIGS : []));
   const [researchDashboard, setResearchDashboard] = useState<ResearchDashboard | null>(() =>
     UI_REVIEW_STAGE === "research" ? UI_REVIEW_RESEARCH_DASHBOARD : null,
   );
@@ -158,6 +215,23 @@ function App() {
   const [authMode, setAuthMode] = useState<"login" | "register">("login");
   const [authUsername, setAuthUsername] = useState("");
   const [authPassword, setAuthPassword] = useState("");
+  const [authRegisterRole, setAuthRegisterRole] = useState<Exclude<UserRole, "admin">>("learner");
+  const [authOrganizationName, setAuthOrganizationName] = useState("");
+  const [authOrganizationCode, setAuthOrganizationCode] = useState("");
+  const [showDefaultAdminNotice, setShowDefaultAdminNotice] = useState(false);
+  const [accountUsernameDraft, setAccountUsernameDraft] = useState("");
+  const [accountCurrentPassword, setAccountCurrentPassword] = useState("");
+  const [accountNewPassword, setAccountNewPassword] = useState("");
+  const [organizationDashboard, setOrganizationDashboard] = useState<OrganizationDashboard | null>(null);
+  const [organizationMembers, setOrganizationMembers] = useState<OrganizationMemberSummary[]>([]);
+  const [organizationKnowledge, setOrganizationKnowledge] = useState<OrganizationKnowledgeItem[]>([]);
+  const [organizationReport, setOrganizationReport] = useState<OrganizationMemberReport | null>(null);
+  const [organizationTaskTitle, setOrganizationTaskTitle] = useState("");
+  const [organizationTaskDescription, setOrganizationTaskDescription] = useState("");
+  const [organizationTaskContent, setOrganizationTaskContent] = useState("");
+  const [organizationTaskTargetMode, setOrganizationTaskTargetMode] = useState<"all" | "selected">("all");
+  const [organizationTaskMemberIds, setOrganizationTaskMemberIds] = useState<string[]>([]);
+  const [myTasks, setMyTasks] = useState<OrganizationTaskAssignment[]>([]);
   const [topicDraft, setTopicDraft] = useState("");
   const [apiConfigForm, setApiConfigForm] = useState<ApiConfigInput>({
     provider: "openai",
@@ -165,6 +239,18 @@ function App() {
     api_key: "",
     model: UI_REVIEW_STAGE === "admin" ? "gpt-4.1-mini" : "",
     is_active: true,
+  });
+  const [speechConfigForm, setSpeechConfigForm] = useState<SpeechConfigInput>({
+    kind: "asr",
+    provider: "sensevoice-openai",
+    base_url: "http://127.0.0.1:10098",
+    api_key: "",
+    model: "SenseVoiceSmall",
+    path: "/v1/audio/transcriptions",
+    is_active: true,
+    voice: "",
+    language: "zh",
+    response_format: "",
   });
   const [lastChatSubmitAt, setLastChatSubmitAt] = useState(0);
   const lastChatSubmitAtRef = useRef(0);
@@ -263,7 +349,7 @@ function App() {
 
   const hasSession = Boolean(sessionId && activeNode);
   const isAdminStage = stage === "admin" && user?.role === "admin";
-  const isFocusStage = stage === "feynman" || stage === "mastery" || stage === "evidence" || stage === "research";
+  const isFocusStage = stage === "feynman" || stage === "mastery" || stage === "evidence" || stage === "research" || stage === "organization" || stage === "tasks";
   const needsActiveNode = stage === "map" || stage === "flow" || stage === "feynman" || stage === "mastery" || stage === "evidence";
 
   useEffect(() => {
@@ -321,11 +407,17 @@ function App() {
         mode={authMode}
         username={authUsername}
         password={authPassword}
+        registerRole={authRegisterRole}
+        organizationName={authOrganizationName}
+        organizationCode={authOrganizationCode}
         error={error}
         isBusy={isBusy}
         onModeChange={setAuthMode}
         onUsernameChange={setAuthUsername}
         onPasswordChange={setAuthPassword}
+        onRegisterRoleChange={setAuthRegisterRole}
+        onOrganizationNameChange={setAuthOrganizationName}
+        onOrganizationCodeChange={setAuthOrganizationCode}
         onSubmit={handleAuthSubmit}
         onRestore={restoreSession}
       />
@@ -876,16 +968,28 @@ function App() {
     await runBusy(async () => {
       const response =
         authMode === "register"
-          ? await register(authUsername.trim(), authPassword)
+          ? await register(authUsername.trim(), authPassword, {
+              role: authRegisterRole,
+              organization_name: authRegisterRole === "org_manager" ? authOrganizationName.trim() : undefined,
+              organization_code: authRegisterRole === "org_member" ? authOrganizationCode.trim() : undefined,
+            })
           : await login(authUsername.trim(), authPassword);
       localStorage.setItem(AUTH_SESSION_STORAGE_KEY, "cookie");
       setToken("cookie");
       setUser(response.user);
+      setShowDefaultAdminNotice(Boolean(response.security_notice ?? response.user.security_notice));
+      setAccountUsernameDraft(response.user.username);
       setAuthPassword("");
       await refreshSessions();
       await refreshSpeech();
       if (response.user.role === "admin") {
         await refreshAdmin();
+      }
+      if (response.user.role === "org_manager") {
+        await refreshOrganization();
+      }
+      if (response.user.role === "org_member") {
+        await refreshMyTasks();
       }
     });
   }
@@ -898,10 +1002,18 @@ function App() {
         localStorage.removeItem(LEGACY_TOKEN_STORAGE_KEY);
         setToken("cookie");
         setUser(currentUser);
+        setShowDefaultAdminNotice(Boolean(currentUser.security_notice));
+        setAccountUsernameDraft(currentUser.username);
         await refreshSessions();
         await refreshSpeech();
         if (currentUser.role === "admin") {
           await refreshAdmin();
+        }
+        if (currentUser.role === "org_manager") {
+          await refreshOrganization();
+        }
+        if (currentUser.role === "org_member") {
+          await refreshMyTasks();
         }
       } catch (caught) {
         localStorage.removeItem(AUTH_SESSION_STORAGE_KEY);
@@ -950,15 +1062,122 @@ function App() {
 
   async function refreshAdmin() {
     if (!token) return;
-    const [users, configs] = await Promise.all([listUsers(), listApiConfigs()]);
+    const [users, configs, speech, organizations] = await Promise.all([
+      listUsers(),
+      listApiConfigs(),
+      listSpeechConfigs(),
+      listOrganizations(),
+    ]);
     setAdminUsers(users);
     setApiConfigs(configs);
+    setSpeechConfigs(speech);
+    setAdminOrganizations(organizations);
   }
 
   async function refreshResearch() {
     if (!token || user?.role !== "admin") return;
     const dashboard = await getResearchDashboard();
     setResearchDashboard(dashboard);
+  }
+
+  async function refreshOrganization() {
+    const [dashboard, members, knowledge] = await Promise.all([
+      getOrganizationDashboard(),
+      listOrganizationMembers(),
+      listOrganizationKnowledge(),
+    ]);
+    setOrganizationDashboard(dashboard);
+    setOrganizationMembers(members);
+    setOrganizationKnowledge(knowledge);
+    if (!organizationReport && members.length > 0) {
+      const report = await getOrganizationMemberReport(members[0].user.id);
+      setOrganizationReport(report);
+    }
+  }
+
+  async function refreshMyTasks() {
+    const assignments = await listMyTasks();
+    setMyTasks(assignments);
+  }
+
+  async function selectOrganizationMember(member: OrganizationMemberSummary) {
+    await runBusy(async () => {
+      const report = await getOrganizationMemberReport(member.user.id);
+      setOrganizationReport(report);
+    });
+  }
+
+  async function createOrganizationLearningTask(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await runBusy(async () => {
+      const selectedMemberIds = organizationTaskTargetMode === "selected" ? organizationTaskMemberIds : [];
+      if (organizationTaskTargetMode === "selected" && selectedMemberIds.length === 0) {
+        throw new Error("请选择至少一个组织成员。");
+      }
+      await createOrganizationTask({
+        title: organizationTaskTitle.trim(),
+        description: organizationTaskDescription.trim(),
+        content: organizationTaskContent.trim(),
+        assign_all: organizationTaskTargetMode === "all",
+        member_ids: selectedMemberIds,
+      });
+      setOrganizationTaskTitle("");
+      setOrganizationTaskDescription("");
+      setOrganizationTaskContent("");
+      setOrganizationTaskTargetMode("all");
+      setOrganizationTaskMemberIds([]);
+      await refreshOrganization();
+    });
+  }
+
+  function toggleOrganizationTaskMember(userId: string) {
+    setOrganizationTaskMemberIds((current) =>
+      current.includes(userId) ? current.filter((item) => item !== userId) : [...current, userId],
+    );
+  }
+
+  async function uploadOrganizationKnowledgeFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    await runBusy(async () => {
+      await uploadOrganizationKnowledge(file);
+      await refreshOrganization();
+    });
+  }
+
+  async function removeOrganizationKnowledge(item: OrganizationKnowledgeItem) {
+    const confirmed = window.confirm(`删除组织知识库「${item.title}」？`);
+    if (!confirmed) return;
+    await runBusy(async () => {
+      await deleteOrganizationKnowledge(item.id);
+      await refreshOrganization();
+    });
+  }
+
+  async function startOrganizationTask(assignment: OrganizationTaskAssignment) {
+    await runBusy(async () => {
+      const response = await startMyTask(assignment.task_id);
+      hydrateSession(response.session);
+      await refreshSessions();
+      await refreshMyTasks();
+      setStage("map");
+    });
+  }
+
+  async function saveDefaultAdminAccount(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await runBusy(async () => {
+      const updated = await updateMyAccount({
+        current_password: accountCurrentPassword,
+        username: accountUsernameDraft.trim() || undefined,
+        new_password: accountNewPassword || undefined,
+      });
+      setUser(updated);
+      setShowDefaultAdminNotice(Boolean(updated.security_notice));
+      setAccountCurrentPassword("");
+      setAccountNewPassword("");
+    });
   }
 
   async function importResearchData() {
@@ -1003,10 +1222,28 @@ function App() {
     });
   }
 
+  async function saveSpeechConfig(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await runBusy(async () => {
+      await runAdminWrite(() => createSpeechConfig(speechConfigForm));
+      setSpeechConfigForm((current) => ({ ...current, api_key: "" }));
+      await refreshAdmin();
+      await refreshSpeech();
+    });
+  }
+
   async function toggleApiConfig(config: ApiConfig) {
     await runBusy(async () => {
       await runAdminWrite(() => updateApiConfig(config.id, { is_active: !config.is_active }));
       await refreshAdmin();
+    });
+  }
+
+  async function toggleSpeechConfig(config: SpeechConfig) {
+    await runBusy(async () => {
+      await runAdminWrite(() => updateSpeechConfig(config.id, { is_active: !config.is_active }));
+      await refreshAdmin();
+      await refreshSpeech();
     });
   }
 
@@ -1019,9 +1256,26 @@ function App() {
     });
   }
 
-  async function changeUserRole(targetUser: User, role: "admin" | "learner") {
+  async function removeSpeechConfig(config: SpeechConfig) {
+    const confirmed = window.confirm(`删除 ${config.kind.toUpperCase()} / ${config.model} 语音配置？`);
+    if (!confirmed) return;
     await runBusy(async () => {
-      await runAdminWrite(() => updateUser(targetUser.id, { role }));
+      await runAdminWrite(() => deleteSpeechConfig(config.id));
+      await refreshAdmin();
+      await refreshSpeech();
+    });
+  }
+
+  async function createAdminUserAccount(payload: AdminUserCreateInput) {
+    await runBusy(async () => {
+      await runAdminWrite(() => createUser(normalizeAdminUserCreatePayload(payload)));
+      await refreshAdmin();
+    });
+  }
+
+  async function changeUserRole(targetUser: User, payload: AdminUserUpdateInput) {
+    await runBusy(async () => {
+      await runAdminWrite(() => updateUser(targetUser.id, normalizeAdminUserUpdatePayload(payload)));
       await refreshAdmin();
     });
   }
@@ -1064,7 +1318,17 @@ function App() {
     setSessionId(null);
     setSessions([]);
     setAdminUsers([]);
+    setAdminOrganizations([]);
     setApiConfigs([]);
+    setSpeechConfigs([]);
+    setOrganizationDashboard(null);
+    setOrganizationMembers([]);
+    setOrganizationKnowledge([]);
+    setOrganizationReport(null);
+    setOrganizationTaskTargetMode("all");
+    setOrganizationTaskMemberIds([]);
+    setMyTasks([]);
+    setShowDefaultAdminNotice(false);
     resetWorkspace();
   }
 
@@ -1179,6 +1443,28 @@ function App() {
       onClick: () => {
         setStage("admin");
         void refreshAdmin();
+      },
+    });
+  }
+  if (user.role === "org_manager") {
+    shellNavItems.push({
+      stage: "organization",
+      icon: <Building2 size={18} />,
+      label: "组织",
+      onClick: () => {
+        setStage("organization");
+        void refreshOrganization();
+      },
+    });
+  }
+  if (user.role === "org_member") {
+    shellNavItems.push({
+      stage: "tasks",
+      icon: <ClipboardList size={18} />,
+      label: "任务",
+      onClick: () => {
+        setStage("tasks");
+        void refreshMyTasks();
       },
     });
   }
@@ -1450,17 +1736,60 @@ function App() {
         />
       )}
 
+      {stage === "organization" && user.role === "org_manager" && (
+        <OrganizationStage
+          dashboard={organizationDashboard}
+          members={organizationMembers}
+          knowledge={organizationKnowledge}
+          report={organizationReport}
+          taskTitle={organizationTaskTitle}
+          taskDescription={organizationTaskDescription}
+          taskContent={organizationTaskContent}
+          taskTargetMode={organizationTaskTargetMode}
+          selectedTaskMemberIds={organizationTaskMemberIds}
+          isBusy={isBusy}
+          onTaskTitleChange={setOrganizationTaskTitle}
+          onTaskDescriptionChange={setOrganizationTaskDescription}
+          onTaskContentChange={setOrganizationTaskContent}
+          onTaskTargetModeChange={setOrganizationTaskTargetMode}
+          onToggleTaskMember={toggleOrganizationTaskMember}
+          onRefresh={() => {
+            void runBusy(refreshOrganization);
+          }}
+          onCreateTask={createOrganizationLearningTask}
+          onUploadKnowledge={uploadOrganizationKnowledgeFile}
+          onDeleteKnowledge={removeOrganizationKnowledge}
+          onSelectMember={selectOrganizationMember}
+        />
+      )}
+
+      {stage === "tasks" && user.role === "org_member" && (
+        <TasksStage
+          assignments={myTasks}
+          isBusy={isBusy}
+          onRefresh={() => {
+            void runBusy(refreshMyTasks);
+          }}
+          onStart={startOrganizationTask}
+        />
+      )}
+
       {needsActiveNode && !activeNode && <EmptyStage onBack={() => setStage("canvas")} />}
 
       {isAdminStage && (
         <AdminStage
           users={adminUsers}
+          organizations={adminOrganizations}
           apiConfigs={apiConfigs}
+          speechConfigs={speechConfigs}
           form={apiConfigForm}
+          speechForm={speechConfigForm}
           isBusy={isBusy}
           v2Enabled={v2Chat.v2Enabled}
           onFormChange={setApiConfigForm}
+          onSpeechFormChange={setSpeechConfigForm}
           onSaveConfig={saveApiConfig}
+          onSaveSpeechConfig={saveSpeechConfig}
           onRefresh={refreshAdmin}
           onToggleV2={v2Chat.toggleV2}
           onEditConfig={(config) => {
@@ -1475,9 +1804,60 @@ function App() {
           }}
           onToggleConfig={toggleApiConfig}
           onDeleteConfig={removeApiConfig}
+          onEditSpeechConfig={(config) => {
+            setSpeechConfigForm({
+              kind: config.kind,
+              provider: config.provider,
+              base_url: config.base_url,
+              api_key: "",
+              model: config.model,
+              path: config.path,
+              is_active: config.is_active,
+              voice: config.voice ?? "",
+              language: config.language ?? "",
+              response_format: config.response_format ?? "",
+            });
+          }}
+          onToggleSpeechConfig={toggleSpeechConfig}
+          onDeleteSpeechConfig={removeSpeechConfig}
+          onCreateUser={createAdminUserAccount}
           onRoleChange={changeUserRole}
           onActiveToggle={toggleUserActive}
         />
+      )}
+
+      {showDefaultAdminNotice && user.security_notice?.kind === "default_admin_credentials" && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="account-modal" role="dialog" aria-modal="true" aria-label="修改默认管理员账号">
+            <div className="section-heading">
+              <p className="eyebrow">Security Notice</p>
+              <h3>默认管理员账号仍在使用初始密码</h3>
+              <span>可以现在修改账号和密码，也可以下次登录时再处理。</span>
+            </div>
+            <form className="admin-form" onSubmit={saveDefaultAdminAccount}>
+              <label>
+                <span>账号</span>
+                <input value={accountUsernameDraft} onChange={(event) => setAccountUsernameDraft(event.target.value)} />
+              </label>
+              <label>
+                <span>当前密码</span>
+                <input type="password" value={accountCurrentPassword} onChange={(event) => setAccountCurrentPassword(event.target.value)} />
+              </label>
+              <label>
+                <span>新密码</span>
+                <input type="password" value={accountNewPassword} onChange={(event) => setAccountNewPassword(event.target.value)} placeholder="至少 8 位，包含字母和数字" />
+              </label>
+              <div className="flow-actions">
+                <button className="secondary-button" type="button" onClick={() => setShowDefaultAdminNotice(false)}>
+                  下次登录修改
+                </button>
+                <button className="primary-button" type="submit" disabled={isBusy}>
+                  现在修改
+                </button>
+              </div>
+            </form>
+          </section>
+        </div>
       )}
     </BlankShell>
   );

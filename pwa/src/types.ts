@@ -2,8 +2,8 @@ export type Persona = "plain" | "vivid" | "academic";
 export type TutorLearningStyle = "visual" | "verbal" | "active";
 export type TutorCommunicationType = "socratic" | "story" | "textbook" | "coach";
 export type NodeStatus = "mastered" | "active" | "available" | "locked";
-export type Stage = "canvas" | "map" | "flow" | "feynman" | "mastery" | "evidence" | "research" | "admin";
-export type UserRole = "admin" | "learner";
+export type Stage = "canvas" | "map" | "flow" | "feynman" | "mastery" | "evidence" | "research" | "admin" | "organization" | "tasks";
+export type UserRole = "admin" | "org_manager" | "org_member" | "learner";
 export type ApiProvider = "openai" | "vllm" | "ollama" | "custom";
 export type ChallengeStage = "warmup" | "mechanism" | "transfer" | "correction" | "recap";
 
@@ -128,8 +128,19 @@ export interface User {
   role: UserRole;
   is_active: boolean;
   created_at: string;
+  organization_id?: string | null;
+  organization_name?: string | null;
+  organization_code?: string | null;
+  default_credentials_seeded?: boolean;
+  password_changed_at?: string | null;
+  security_notice?: AuthSecurityNotice | null;
   total_tokens: number;
   today_tokens: number;
+}
+
+export interface AuthSecurityNotice {
+  kind: "default_admin_credentials";
+  can_defer: boolean;
 }
 
 export interface ApiConfig {
@@ -139,6 +150,24 @@ export interface ApiConfig {
   api_key_masked: string;
   model: string;
   is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export type SpeechConfigKind = "asr" | "tts";
+
+export interface SpeechConfig {
+  id: string;
+  kind: SpeechConfigKind;
+  provider: string;
+  base_url: string;
+  api_key_masked: string;
+  model: string;
+  path: string;
+  is_active: boolean;
+  voice?: string | null;
+  language?: string | null;
+  response_format?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -279,4 +308,80 @@ export interface ResearchDashboard {
   experiment_summaries: ResearchExperimentGroupSummary[];
   score_agreement: ResearchScoreAgreement;
   experiment_records: ResearchExperimentRecord[];
+}
+
+export interface Organization {
+  id: string;
+  code: string;
+  name: string;
+  owner_user_id: string;
+  current_user_role: "org_manager" | "org_member" | null;
+  member_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OrganizationMemberSummary {
+  user: User;
+  joined_at: string;
+  session_count: number;
+  mastered_count: number;
+  node_count: number;
+  average_feynman_score: number;
+}
+
+export interface OrganizationLearningTask {
+  id: string;
+  organization_id: string;
+  creator_user_id: string;
+  title: string;
+  description: string;
+  template_session_id: string;
+  material_title: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OrganizationTaskAssignment {
+  id: string;
+  task_id: string;
+  organization_id: string;
+  user_id: string;
+  status: "assigned" | "started" | "completed";
+  session_id?: string | null;
+  assigned_at: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+  task?: OrganizationLearningTask | null;
+}
+
+export interface OrganizationTaskCreateResponse {
+  task: OrganizationLearningTask;
+  assignments: OrganizationTaskAssignment[];
+}
+
+export interface OrganizationKnowledgeItem {
+  id: string;
+  organization_id: string;
+  uploader_user_id: string;
+  title: string;
+  chunk_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OrganizationMemberReport {
+  user: User;
+  sessions: import("./api").SessionSummary[];
+  feynman_answers: ResearchBlindReviewAnswer[];
+  dimension_scores: DimensionScore[];
+  mastered_count: number;
+  node_count: number;
+  average_feynman_score: number;
+}
+
+export interface OrganizationDashboard {
+  organization: Organization;
+  dashboard: ResearchDashboard;
+  members: OrganizationMemberSummary[];
 }

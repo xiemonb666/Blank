@@ -43,6 +43,8 @@ RESOURCE_ID_PATTERN = re.compile(r"^[a-f0-9]{32}$")
 CONTROL_CHARACTER_PATTERN = re.compile(r"[\x00-\x1f\x7f]")
 ALLOWED_API_PROVIDERS = {"openai", "vllm", "ollama", "custom"}
 OPENAI_COMPATIBLE_PROVIDERS = {"openai", "vllm", "custom"}
+ALLOWED_SPEECH_CONFIG_KINDS = {"asr", "tts"}
+SPEECH_PROVIDER_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,79}$")
 TOKEN_STORAGE_PREFIX = "hmac_sha256"
 LEGACY_TOKEN_STORAGE_PREFIX = "sha256"
 
@@ -364,6 +366,78 @@ def validate_api_config_parts(provider: str, base_url: str, api_key: str, model:
     if normalized_provider in OPENAI_COMPATIBLE_PROVIDERS and not normalized_api_key:
         raise ValueError("OpenAI 兼容接口必须填写 API Key。")
     return normalized_provider, normalized_base_url, normalized_api_key, normalized_model
+
+
+def validate_speech_config_kind(kind: str) -> str:
+    normalized = kind.strip().lower()
+    if normalized not in ALLOWED_SPEECH_CONFIG_KINDS:
+        raise ValueError("语音配置类型仅允许 asr 或 tts。")
+    return normalized
+
+
+def validate_speech_provider(provider: str) -> str:
+    normalized = provider.strip().lower()
+    if provider != normalized:
+        raise ValueError("语音 Provider 不能包含首尾空白或大写字符。")
+    if CONTROL_CHARACTER_PATTERN.search(normalized):
+        raise ValueError("语音 Provider 不允许包含控制字符。")
+    if not SPEECH_PROVIDER_PATTERN.fullmatch(normalized):
+        raise ValueError("语音 Provider 仅允许小写字母、数字、点、下划线和短横线。")
+    return normalized
+
+
+def validate_speech_endpoint_path(path: str) -> str:
+    normalized = path.strip()
+    if not normalized:
+        raise ValueError("语音接口路径不能为空。")
+    if CONTROL_CHARACTER_PATTERN.search(normalized) or any(char.isspace() for char in normalized):
+        raise ValueError("语音接口路径不允许包含空白或控制字符。")
+    if "?" in normalized or "#" in normalized:
+        raise ValueError("语音接口路径不允许包含查询参数或 URL 片段。")
+    if len(normalized) > 240:
+        raise ValueError("语音接口路径过长。")
+    return normalized if normalized.startswith("/") else f"/{normalized}"
+
+
+def validate_optional_speech_text(value: str | None, label: str, limit: int) -> str:
+    if value is None:
+        return ""
+    normalized = value.strip()
+    if not normalized:
+        return ""
+    if CONTROL_CHARACTER_PATTERN.search(normalized):
+        raise ValueError(f"{label} 不允许包含控制字符。")
+    return normalized[:limit]
+
+
+def validate_speech_config_parts(
+    kind: str,
+    provider: str,
+    base_url: str,
+    api_key: str,
+    model: str,
+    path: str,
+    voice: str | None = None,
+    language: str | None = None,
+    response_format: str | None = None,
+) -> tuple[str, str, str, str, str, str, str, str, str]:
+    normalized_kind = validate_speech_config_kind(kind)
+    normalized_provider = validate_speech_provider(provider)
+    normalized_base_url, normalized_api_key, normalized_model = validate_model_request_parts(base_url, api_key, model)
+    if not normalized_model:
+        raise ValueError("语音模型名称不能为空。")
+    normalized_path = validate_speech_endpoint_path(path)
+    return (
+        normalized_kind,
+        normalized_provider,
+        normalized_base_url,
+        normalized_api_key,
+        normalized_model,
+        normalized_path,
+        validate_optional_speech_text(voice, "TTS 音色", 80),
+        validate_optional_speech_text(language, "语音语言", 24),
+        validate_optional_speech_text(response_format, "TTS 返回格式", 16).lower(),
+    )
 
 
 def allow_private_model_urls() -> bool:

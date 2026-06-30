@@ -165,7 +165,7 @@ def _retrieve_graph_context(session: LearningSession, ai_config: dict[str, str] 
     try:
         from ..services_v2.vector_service import hybrid_graph_search
         if ai_config:
-            return hybrid_graph_search(
+            graph_context = hybrid_graph_search(
                 query,
                 ai_config,
                 top_k=3,
@@ -174,11 +174,62 @@ def _retrieve_graph_context(session: LearningSession, ai_config: dict[str, str] 
                 session_id=session.id,
                 source_id=session.id,
             )
+            if session.organization_id:
+                try:
+                    organization_context = hybrid_graph_search(
+                        query,
+                        ai_config,
+                        top_k=3,
+                        tenant_id=session.organization_id,
+                        session_id=session.organization_id,
+                    )
+                    graph_context = _merge_graph_contexts(graph_context, organization_context)
+                except Exception as org_exc:
+                    safe_org_detail = redact_secret_text(str(org_exc), limit=180)
+                    graph_context = _merge_graph_contexts(
+                        graph_context,
+                        _organization_db_graph_context(session, f"组织 GraphRAG 回退：{safe_org_detail}"),
+                    )
+            else:
+                graph_context = _merge_graph_contexts(graph_context)
+            return graph_context
     except Exception as exc:
         safe_detail = redact_secret_text(str(exc), limit=180)
         return _fallback_graph_context(session, f"GraphRAG 回退：{safe_detail}")
 
     return _fallback_graph_context(session)
+
+
+def _merge_graph_contexts(*contexts: dict) -> dict:
+    chunks = []
+    subgraphs = []
+    fallback_reasons = []
+    for context in contexts:
+        chunks.extend(context.get("chunks") or [])
+        subgraphs.extend(context.get("subgraphs") or [])
+        if context.get("fallback") and context.get("reason"):
+            fallback_reasons.append(str(context["reason"]))
+    merged = {"chunks": chunks, "subgraphs": subgraphs}
+    if fallback_reasons and not chunks and not subgraphs:
+        merged["fallback"] = True
+        merged["reason"] = "；".join(fallback_reasons)
+    return merged
+
+
+def _organization_db_graph_context(session: LearningSession, reason: str) -> dict:
+    if not session.organization_id:
+        return {"chunks": [], "subgraphs": [], "fallback": True, "reason": reason}
+    from ..main import store
+
+    context = store.organization_knowledge_context(session.organization_id)
+    if not context:
+        return {"chunks": [], "subgraphs": [], "fallback": True, "reason": reason}
+    return {
+        "chunks": [{"text": context[:1200], "score": 0.8, "source_id": session.organization_id}],
+        "subgraphs": [],
+        "fallback": True,
+        "reason": reason,
+    }
 
 
 def require_v2_user(
@@ -290,6 +341,12 @@ async def v2_chat_stream(payload: V2ChatRequest, user: UserPublic = Depends(requ
 
     if session_obj is None:
         raise HTTPException(status_code=404, detail="会话不存在")
+    if session_obj.organization_id and "组织知识库参考：" not in session_obj.material_context:
+        organization_context = store.organization_knowledge_context(session_obj.organization_id)
+        if organization_context:
+            session_obj.material_context = (
+                f"{session_obj.material_context}\n\n组织知识库参考：\n{organization_context[:4000]}"
+            ).strip()
     log_debug_event(
         "v2.chat.request",
         user_id=user.id,

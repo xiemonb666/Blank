@@ -25,6 +25,23 @@ _DEFAULT_EMBEDDING_DIM = int(os.getenv("BLANK_EMBEDDING_DIM", "1536"))
 _DEFAULT_SIMILARITY = os.getenv("BLANK_EMBEDDING_SIMILARITY", "cosine")
 
 
+def _normalize_search_scope(
+    tenant_id: str | None = None,
+    user_id: str | None = None,
+    session_id: str | None = None,
+    source_id: str | None = None,
+) -> dict[str, str]:
+    normalized = {
+        "tenant_id": (tenant_id or user_id or session_id or source_id or "").strip(),
+        "user_id": (user_id or "").strip(),
+        "session_id": (session_id or source_id or "").strip(),
+        "source_id": (source_id or "").strip(),
+    }
+    if not normalized["tenant_id"] or not normalized["session_id"]:
+        raise ValueError("GraphRAG 检索必须提供 tenant_id 和 session_id 隔离范围。")
+    return normalized
+
+
 def _get_embedding_endpoint(base_url: str) -> str:
     """根据 Base URL 拼接出 OpenAI 兼容的 Embedding 端点。"""
     normalized = base_url.rstrip("/")
@@ -260,9 +277,7 @@ def similarity_search(
     """
     if not query or not query.strip():
         return []
-    from .neo4j_service import _normalize_scope
-
-    scope = _normalize_scope(tenant_id, user_id, session_id, source_id)
+    scope = _normalize_search_scope(tenant_id, user_id, session_id, source_id)
 
     # 1. 查询向量化
     try:
@@ -274,14 +289,16 @@ def similarity_search(
     driver = get_neo4j_driver()
     try:
         with driver.session() as session:
+            user_filter = "AND node.user_id = $user_id" if scope["user_id"] else ""
+            source_filter = "AND node.source_id = $source_id" if scope["source_id"] else ""
             result = session.run(
-                """
+                f"""
                 CALL db.index.vector.queryNodes('chunk_embedding', $candidate_k, $embedding)
                 YIELD node, score
                 WHERE node.tenant_id = $tenant_id
-                  AND node.user_id = $user_id
                   AND node.session_id = $session_id
-                  AND node.source_id = $source_id
+                  {user_filter}
+                  {source_filter}
                 RETURN node.text AS text, node.source_id AS source_id, score
                 ORDER BY score DESC
                 LIMIT $top_k
@@ -323,14 +340,16 @@ def hybrid_graph_search(
     返回：
         {"chunks": [...], "subgraphs": [{"center": "实体名", "nodes": [...], "edges": [...]}]}
     """
-    from .neo4j_service import _normalize_scope, get_entity_subgraph
+    from .neo4j_service import get_entity_subgraph
 
-    scope = _normalize_scope(tenant_id, user_id, session_id, source_id)
+    scope = _normalize_search_scope(tenant_id, user_id, session_id, source_id)
 
     # 1. 向量检索召回文本块
     chunks = similarity_search(query, ai_config, top_k=top_k, **scope)
     if not chunks:
         return {"chunks": [], "subgraphs": []}
+    if not scope["source_id"]:
+        return {"chunks": chunks, "subgraphs": []}
 
     # 2. 从召回文本中提取可能提及的实体（简单策略：匹配已有实体名称）
     driver = get_neo4j_driver()

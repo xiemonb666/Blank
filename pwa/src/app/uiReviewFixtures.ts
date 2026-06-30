@@ -8,6 +8,7 @@ import type {
   Message,
   NodeLearningProfile,
   ResearchDashboard,
+  SpeechConfig,
   Stage,
   User,
 } from "../types";
@@ -51,6 +52,39 @@ export const UI_REVIEW_API_CONFIGS: ApiConfig[] = [
     api_key_masked: "sk-...review",
     model: "gpt-4.1-mini",
     is_active: true,
+    created_at: "2026-06-11T00:00:00Z",
+    updated_at: "2026-06-11T00:00:00Z",
+  },
+];
+
+export const UI_REVIEW_SPEECH_CONFIGS: SpeechConfig[] = [
+  {
+    id: "ui-review-asr",
+    kind: "asr",
+    provider: "sensevoice-openai",
+    base_url: "http://127.0.0.1:10098",
+    api_key_masked: "已保存（15 字符）",
+    model: "SenseVoiceSmall",
+    path: "/v1/audio/transcriptions",
+    is_active: true,
+    voice: null,
+    language: "zh",
+    response_format: null,
+    created_at: "2026-06-11T00:00:00Z",
+    updated_at: "2026-06-11T00:00:00Z",
+  },
+  {
+    id: "ui-review-tts",
+    kind: "tts",
+    provider: "supertonic-http",
+    base_url: "http://127.0.0.1:7788",
+    api_key_masked: "已保存（15 字符）",
+    model: "supertonic",
+    path: "/v1/audio/speech",
+    is_active: true,
+    voice: "F1",
+    language: "zh",
+    response_format: "wav",
     created_at: "2026-06-11T00:00:00Z",
     updated_at: "2026-06-11T00:00:00Z",
   },
@@ -382,6 +416,6 @@ export const UI_REVIEW_ANSWER_MAP: Record<string, Record<string, FeynmanAnswer>>
 function resolveUiReviewStage(): Stage | null {
   if (!import.meta.env.DEV || typeof window === "undefined") return null;
   const stage = new URLSearchParams(window.location.search).get("ui-review");
-  if (stage === "canvas" || stage === "map" || stage === "flow" || stage === "feynman" || stage === "mastery" || stage === "evidence" || stage === "research" || stage === "admin") return stage;
+  if (stage === "canvas" || stage === "map" || stage === "flow" || stage === "feynman" || stage === "mastery" || stage === "evidence" || stage === "research" || stage === "admin" || stage === "organization" || stage === "tasks") return stage;
   return null;
 }

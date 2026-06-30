@@ -616,7 +616,15 @@ FEYNMAN_SYSTEM_PROMPT = """你是 Blank 学习系统的逐题费曼诊断评审�
 - reason 必须说明为什么这样记录记忆，不能空泛，不能编造学习者没有表现出的长期特征。"""
 
 
-def create_session(title: str, content: str, user_id: str, ai_config: dict[str, str] | None = None) -> LearningSession:
+def create_session(
+    title: str,
+    content: str,
+    user_id: str,
+    ai_config: dict[str, str] | None = None,
+    organization_id: str | None = None,
+    task_id: str | None = None,
+    visibility: str = "personal",
+) -> LearningSession:
     normalized = content.strip()
     if not normalized:
         raise AiSplitError("学习材料为空，请先上传或输入真实材料。")
@@ -630,6 +638,9 @@ def create_session(title: str, content: str, user_id: str, ai_config: dict[str, 
     return LearningSession(
         id=uuid4().hex,
         user_id=user_id,
+        organization_id=organization_id,
+        task_id=task_id,
+        visibility=visibility,
         material_title=title.strip() or "未命名材料",
         material_context=trim_material_context(normalized),
         nodes=nodes,
@@ -1855,11 +1866,26 @@ def is_deepseek_endpoint(base_url: str) -> bool:
 
 
 def safe_http_error_detail(exc: urllib.error.HTTPError) -> str:
+    cached = getattr(exc, "_blank_safe_detail", None)
+    if isinstance(cached, str) and cached:
+        return cached
+    raw = b""
     try:
-        detail = exc.read(2048).decode("utf-8", errors="replace").strip()
+        raw = exc.read(2048)
     except OSError:
-        detail = ""
-    return redact_secret_text(detail or str(exc.reason))
+        raw = b""
+    if not raw and getattr(exc, "fp", None) is not None:
+        try:
+            raw = exc.fp.read(2048)
+        except OSError:
+            raw = b""
+    detail = raw.decode("utf-8", errors="replace").strip() if raw else ""
+    safe_detail = redact_secret_text(detail or str(exc.reason))
+    try:
+        setattr(exc, "_blank_safe_detail", safe_detail)
+    except Exception:
+        return safe_detail
+    return safe_detail
 
 
 def select_node(session: LearningSession, node_id: str) -> LearningSession:

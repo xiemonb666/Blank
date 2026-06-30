@@ -15,11 +15,13 @@ TutorLearningStyle = Literal["visual", "verbal", "active"]
 TutorCommunicationType = Literal["socratic", "story", "textbook", "coach"]
 NodeStatus = Literal["mastered", "active", "available", "locked"]
 MessageRole = Literal["mentor", "learner"]
-UserRole = Literal["admin", "learner"]
+UserRole = Literal["admin", "org_manager", "org_member", "learner"]
 ApiProvider = Literal["openai", "vllm", "ollama", "custom"]
+SpeechConfigKind = Literal["asr", "tts"]
 ParseSource = Literal["ai", "local"]
 ParseJobStatus = Literal["queued", "running", "completed", "failed"]
 ChallengeStage = Literal["warmup", "mechanism", "transfer", "correction", "recap"]
+SessionVisibility = Literal["personal", "organization_task_template", "organization_member"]
 
 
 class StrictRequestModel(BaseModel):
@@ -144,6 +146,9 @@ class MemoryEntry(BaseModel):
 class LearningSession(BaseModel):
     id: str
     user_id: str
+    organization_id: str | None = None
+    task_id: str | None = None
+    visibility: SessionVisibility = "personal"
     material_title: str
     material_context: str = ""
     nodes: list[KnowledgeNode]
@@ -168,6 +173,9 @@ class LearningSession(BaseModel):
 
 class LearningSessionPublic(BaseModel):
     id: str
+    organization_id: str | None = None
+    task_id: str | None = None
+    visibility: SessionVisibility = "personal"
     material_title: str
     nodes: list[KnowledgeNode]
     active_node_id: str
@@ -360,12 +368,23 @@ class ResearchDashboardResponse(BaseModel):
     experiment_records: list[ResearchExperimentRecord] = Field(default_factory=list)
 
 
+class AuthSecurityNotice(BaseModel):
+    kind: Literal["default_admin_credentials"]
+    can_defer: bool = True
+
+
 class UserPublic(BaseModel):
     id: str
     username: str
     role: UserRole
     is_active: bool
     created_at: datetime
+    organization_id: str | None = None
+    organization_name: str | None = None
+    organization_code: str | None = None
+    default_credentials_seeded: bool = False
+    password_changed_at: datetime | None = None
+    security_notice: AuthSecurityNotice | None = None
     total_tokens: int = 0
     today_tokens: int = 0
 
@@ -397,6 +416,9 @@ class AuditLogEntry(BaseModel):
 class UserCreateRequest(StrictRequestModel):
     username: str = Field(min_length=2, max_length=32, pattern=r"^[A-Za-z0-9_\u4e00-\u9fff]+$")
     password: str = Field(min_length=8, max_length=128)
+    role: UserRole = "learner"
+    organization_name: str | None = Field(default=None, min_length=1, max_length=80)
+    organization_code: str | None = Field(default=None, min_length=4, max_length=32)
     admin_bootstrap_key: str | None = Field(default=None, max_length=256)
     remember_me: bool = False
 
@@ -414,11 +436,113 @@ class ReauthRequest(StrictRequestModel):
 class AuthResponse(BaseModel):
     token: str = ""
     user: UserPublic
+    security_notice: AuthSecurityNotice | None = None
+
+
+class AccountUpdateRequest(StrictRequestModel):
+    current_password: str = Field(min_length=1, max_length=128)
+    username: str | None = Field(default=None, min_length=2, max_length=32, pattern=r"^[A-Za-z0-9_\u4e00-\u9fff]+$")
+    new_password: str | None = Field(default=None, min_length=8, max_length=128)
+
+
+class AdminUserCreateRequest(StrictRequestModel):
+    username: str = Field(min_length=2, max_length=32, pattern=r"^[A-Za-z0-9_\u4e00-\u9fff]+$")
+    password: str = Field(min_length=8, max_length=128)
+    role: UserRole = "learner"
+    is_active: bool = True
+    organization_name: str | None = Field(default=None, min_length=1, max_length=80)
+    organization_code: str | None = Field(default=None, min_length=4, max_length=32)
 
 
 class UserUpdateRequest(StrictRequestModel):
     role: UserRole | None = None
     is_active: bool | None = None
+    organization_name: str | None = Field(default=None, min_length=1, max_length=80)
+    organization_code: str | None = Field(default=None, min_length=4, max_length=32)
+
+
+class OrganizationPublic(BaseModel):
+    id: str
+    code: str
+    name: str
+    owner_user_id: str
+    current_user_role: Literal["org_manager", "org_member"] | None = None
+    member_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class OrganizationMemberSummary(BaseModel):
+    user: UserPublic
+    joined_at: datetime
+    session_count: int = Field(ge=0)
+    mastered_count: int = Field(ge=0)
+    node_count: int = Field(ge=0)
+    average_feynman_score: float = Field(ge=0, le=100)
+
+
+class OrganizationTaskCreateRequest(StrictRequestModel):
+    title: str = Field(min_length=1, max_length=120)
+    content: str = Field(min_length=1, max_length=20000)
+    description: str = Field(default="", max_length=500)
+    assign_all: bool = True
+    member_ids: list[str] = Field(default_factory=list, max_length=500)
+
+
+class OrganizationLearningTask(BaseModel):
+    id: str
+    organization_id: str
+    creator_user_id: str
+    title: str
+    description: str = ""
+    template_session_id: str
+    material_title: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class OrganizationTaskAssignment(BaseModel):
+    id: str
+    task_id: str
+    organization_id: str
+    user_id: str
+    status: Literal["assigned", "started", "completed"] = "assigned"
+    session_id: str | None = None
+    assigned_at: datetime
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    task: OrganizationLearningTask | None = None
+
+
+class OrganizationTaskCreateResponse(BaseModel):
+    task: OrganizationLearningTask
+    assignments: list[OrganizationTaskAssignment] = Field(default_factory=list)
+
+
+class OrganizationKnowledgeItem(BaseModel):
+    id: str
+    organization_id: str
+    uploader_user_id: str
+    title: str
+    chunk_count: int = Field(ge=0)
+    created_at: datetime
+    updated_at: datetime
+
+
+class OrganizationMemberReport(BaseModel):
+    user: UserPublic
+    sessions: list[SessionSummary] = Field(default_factory=list)
+    feynman_answers: list[ResearchBlindReviewAnswer] = Field(default_factory=list)
+    dimension_scores: list[DimensionScore] = Field(default_factory=list)
+    mastered_count: int = Field(ge=0)
+    node_count: int = Field(ge=0)
+    average_feynman_score: float = Field(ge=0, le=100)
+
+
+class OrganizationDashboardResponse(BaseModel):
+    organization: OrganizationPublic
+    dashboard: ResearchDashboardResponse
+    members: list[OrganizationMemberSummary] = Field(default_factory=list)
 
 
 class SessionCreateRequest(StrictRequestModel):
@@ -579,6 +703,47 @@ class ApiConfigUpdateRequest(StrictRequestModel):
     api_key: str | None = Field(default=None, max_length=1000)
     model: str | None = Field(default=None, max_length=120)
     is_active: bool | None = None
+
+
+class SpeechConfig(BaseModel):
+    id: str
+    kind: SpeechConfigKind
+    provider: str = Field(min_length=1, max_length=80)
+    base_url: str = Field(min_length=1, max_length=500)
+    api_key_masked: str
+    model: str = Field(min_length=1, max_length=120)
+    path: str = Field(min_length=1, max_length=240)
+    is_active: bool
+    voice: str | None = Field(default=None, max_length=80)
+    language: str | None = Field(default=None, max_length=24)
+    response_format: str | None = Field(default=None, max_length=16)
+    created_at: datetime
+    updated_at: datetime
+
+
+class SpeechConfigCreateRequest(StrictRequestModel):
+    kind: SpeechConfigKind
+    provider: str = Field(min_length=1, max_length=80)
+    base_url: str = Field(min_length=1, max_length=500)
+    api_key: str = Field(default="", max_length=1000)
+    model: str = Field(min_length=1, max_length=120)
+    path: str = Field(min_length=1, max_length=240)
+    is_active: bool = True
+    voice: str | None = Field(default=None, max_length=80)
+    language: str | None = Field(default=None, max_length=24)
+    response_format: str | None = Field(default=None, max_length=16)
+
+
+class SpeechConfigUpdateRequest(StrictRequestModel):
+    provider: str | None = Field(default=None, min_length=1, max_length=80)
+    base_url: str | None = Field(default=None, min_length=1, max_length=500)
+    api_key: str | None = Field(default=None, max_length=1000)
+    model: str | None = Field(default=None, min_length=1, max_length=120)
+    path: str | None = Field(default=None, min_length=1, max_length=240)
+    is_active: bool | None = None
+    voice: str | None = Field(default=None, max_length=80)
+    language: str | None = Field(default=None, max_length=24)
+    response_format: str | None = Field(default=None, max_length=16)
 
 
 class SpeechCapabilitiesResponse(BaseModel):

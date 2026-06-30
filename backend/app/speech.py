@@ -7,6 +7,7 @@ import uuid
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from collections.abc import Callable
 from urllib.parse import urljoin
 
 from .debug_logging import log_debug_event
@@ -41,6 +42,9 @@ class SpeechEndpointConfig:
     api_key: str
     model: str
     path: str
+    voice: str | None = None
+    language: str | None = None
+    response_format: str | None = None
 
 
 @dataclass(frozen=True)
@@ -49,6 +53,14 @@ class SpeechSynthesisResult:
     content_type: str
     provider: str
     voice: str | None
+
+
+_SPEECH_CONFIG_PROVIDER: Callable[[str], dict[str, str] | None] | None = None
+
+
+def set_speech_config_provider(provider: Callable[[str], dict[str, str] | None] | None) -> None:
+    global _SPEECH_CONFIG_PROVIDER
+    _SPEECH_CONFIG_PROVIDER = provider
 
 
 def speech_capabilities() -> SpeechCapabilitiesResponse:
@@ -60,7 +72,7 @@ def speech_capabilities() -> SpeechCapabilitiesResponse:
         asr_provider=asr.provider if asr else None,
         asr_model=asr.model if asr else None,
         tts_provider=tts.provider if tts else None,
-        tts_voice=default_tts_voice() if tts else None,
+        tts_voice=default_tts_voice(tts) if tts else None,
     )
 
 
@@ -142,9 +154,9 @@ def synthesize_speech(text: str, voice: str | None = None, language: str | None 
         {
             "model": config.model,
             "input": normalized_text,
-            "voice": normalize_optional_text(voice, 80) or default_tts_voice(),
-            "response_format": default_tts_format(),
-            "language": normalize_optional_text(language, 24) or default_tts_language(),
+            "voice": normalize_optional_text(voice, 80) or default_tts_voice(config),
+            "response_format": default_tts_format(config),
+            "language": normalize_optional_text(language, 24) or default_tts_language(config),
         },
         ensure_ascii=False,
     ).encode("utf-8")
@@ -154,7 +166,7 @@ def synthesize_speech(text: str, voice: str | None = None, language: str | None 
         method="POST",
         headers={
             "Content-Type": "application/json",
-            "Accept": f"{tts_accept_header()}, application/json",
+            "Accept": f"{tts_accept_header(config)}, application/json",
             **authorization_header(config.api_key),
         },
     )
@@ -171,12 +183,12 @@ def synthesize_speech(text: str, voice: str | None = None, language: str | None 
     except ValueError as exc:
         raise SpeechServiceError(redact_secret_text(str(exc), limit=180)) from exc
 
-    audio, content_type = parse_tts_response(raw, response_type or default_tts_mime_type())
+    audio, content_type = parse_tts_response(raw, response_type or default_tts_mime_type(config))
     log_debug_event(
         "speech.tts.synthesized",
         provider=config.provider,
         model=config.model,
-        voice=normalize_optional_text(voice, 80) or default_tts_voice(),
+        voice=normalize_optional_text(voice, 80) or default_tts_voice(config),
         chars=len(normalized_text),
         bytes=len(audio),
         content_type=content_type,
@@ -185,11 +197,14 @@ def synthesize_speech(text: str, voice: str | None = None, language: str | None 
         audio=audio,
         content_type=content_type,
         provider=config.provider,
-        voice=normalize_optional_text(voice, 80) or default_tts_voice(),
+        voice=normalize_optional_text(voice, 80) or default_tts_voice(config),
     )
 
 
 def optional_asr_config() -> SpeechEndpointConfig | None:
+    configured = configured_speech_endpoint("asr")
+    if configured is not None:
+        return configured
     base_url = os.getenv("BLANK_ASR_BASE_URL", "").strip()
     if not base_url:
         return None
@@ -208,6 +223,9 @@ def optional_asr_config() -> SpeechEndpointConfig | None:
 
 
 def optional_tts_config() -> SpeechEndpointConfig | None:
+    configured = configured_speech_endpoint("tts")
+    if configured is not None:
+        return configured
     base_url = os.getenv("BLANK_TTS_BASE_URL", "").strip()
     if not base_url:
         return None
@@ -222,6 +240,9 @@ def optional_tts_config() -> SpeechEndpointConfig | None:
         api_key=normalized_api_key,
         model=normalized_model,
         path=normalize_endpoint_path(path),
+        voice=default_tts_voice(),
+        language=default_tts_language(),
+        response_format=default_tts_format(),
     )
 
 
@@ -281,30 +302,68 @@ def normalize_endpoint_path(path: str) -> str:
     return normalized if normalized.startswith("/") else f"/{normalized}"
 
 
-def default_tts_voice() -> str:
+def configured_speech_endpoint(kind: str) -> SpeechEndpointConfig | None:
+    if _SPEECH_CONFIG_PROVIDER is None:
+        return None
+    try:
+        record = _SPEECH_CONFIG_PROVIDER(kind)
+    except Exception as exc:
+        log_debug_event("speech.config.load_failed", kind=kind, error=redact_secret_text(str(exc), limit=180))
+        return None
+    if not record:
+        return None
+    base_url, api_key, model = validate_model_request_parts(
+        str(record.get("base_url") or ""),
+        str(record.get("api_key") or ""),
+        str(record.get("model") or ""),
+    )
+    return SpeechEndpointConfig(
+        provider=str(record.get("provider") or "").strip().lower(),
+        base_url=base_url,
+        api_key=api_key,
+        model=model,
+        path=normalize_endpoint_path(str(record.get("path") or default_speech_path(kind))),
+        voice=normalize_optional_text(record.get("voice"), 80),
+        language=normalize_optional_text(record.get("language"), 24),
+        response_format=normalize_optional_text(record.get("response_format"), 16),
+    )
+
+
+def default_speech_path(kind: str) -> str:
+    return "/v1/audio/transcriptions" if kind == "asr" else "/v1/audio/speech"
+
+
+def default_tts_voice(config: SpeechEndpointConfig | None = None) -> str:
+    if config and config.voice:
+        return config.voice
     return normalize_optional_text(os.getenv("BLANK_TTS_VOICE", "F1"), 80) or "F1"
 
 
-def default_tts_language() -> str:
+def default_tts_language(config: SpeechEndpointConfig | None = None) -> str:
+    if config and config.language:
+        return config.language
     return normalize_optional_text(os.getenv("BLANK_TTS_LANGUAGE", "zh"), 24) or "zh"
 
 
-def default_tts_format() -> str:
-    value = normalize_optional_text(os.getenv("BLANK_TTS_RESPONSE_FORMAT", "wav"), 16) or "wav"
+def default_tts_format(config: SpeechEndpointConfig | None = None) -> str:
+    value = (config.response_format if config and config.response_format else None) or normalize_optional_text(
+        os.getenv("BLANK_TTS_RESPONSE_FORMAT", "wav"),
+        16,
+    ) or "wav"
     return value.lower()
 
 
-def default_tts_mime_type() -> str:
+def default_tts_mime_type(config: SpeechEndpointConfig | None = None) -> str:
     mapping = {
         "mp3": "audio/mpeg",
         "opus": "audio/ogg",
         "wav": "audio/wav",
     }
-    return mapping.get(default_tts_format(), "audio/wav")
+    return mapping.get(default_tts_format(config), "audio/wav")
 
 
-def tts_accept_header() -> str:
-    return default_tts_mime_type()
+def tts_accept_header(config: SpeechEndpointConfig | None = None) -> str:
+    return default_tts_mime_type(config)
 
 
 def speech_request_timeout() -> int:

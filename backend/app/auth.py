@@ -39,6 +39,7 @@ def register_user(
     store: SessionStore,
     username: str,
     password: str,
+    role: str = "learner",
     admin_bootstrap_key: str | None = None,
     allow_learner_registration: bool = True,
 ) -> UserPublic:
@@ -50,7 +51,9 @@ def register_user(
             return "admin"
         if not allow_learner_registration:
             raise ValueError("生产环境已关闭公开注册，请联系管理员创建账号。")
-        return "learner"
+        if role not in {"learner", "org_manager", "org_member"}:
+            raise ValueError("注册身份无效。")
+        return role
 
     return store.create_user_atomic(
         user_id=uuid4().hex,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from copy import deepcopy
 import ipaddress
 from pathlib import Path
 from threading import BoundedSemaphore, Event, Thread
@@ -17,13 +18,15 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.responses import StreamingResponse
 
-from .auth import authenticate_user, issue_token, register_user
+from .auth import authenticate_user, hash_password, issue_token, register_user
 from .debug_logging import log_debug_event, sanitize_debug_text, sanitize_debug_value
 from .materials import MaterialParseError, extract_material_text, safe_material_title
 from .models import (
+    AdminUserCreateRequest,
     ApiConfig,
     ApiConfigCreateRequest,
     ApiConfigUpdateRequest,
+    AccountUpdateRequest,
     AuthResponse,
     AuditLogEntry,
     ChatRequest,
@@ -40,6 +43,15 @@ from .models import (
     LearningSessionPublic,
     LoginRequest,
     NodeSelectRequest,
+    OrganizationDashboardResponse,
+    OrganizationKnowledgeItem,
+    OrganizationLearningTask,
+    OrganizationMemberReport,
+    OrganizationMemberSummary,
+    OrganizationPublic,
+    OrganizationTaskAssignment,
+    OrganizationTaskCreateRequest,
+    OrganizationTaskCreateResponse,
     ParseJobCreateResponse,
     ParseJobPublic,
     ParseJobStatusResponse,
@@ -53,6 +65,9 @@ from .models import (
     SessionCreateRequest,
     SessionCreateResponse,
     SessionSummary,
+    SpeechConfig,
+    SpeechConfigCreateRequest,
+    SpeechConfigUpdateRequest,
     SpeechCapabilitiesResponse,
     SpeechSynthesisRequest,
     SpeechTranscriptionResponse,
@@ -65,6 +80,7 @@ from .models import (
 from .speech import (
     MAX_SPEECH_UPLOAD_BYTES,
     SpeechServiceError,
+    set_speech_config_provider,
     speech_capabilities,
     synthesize_speech,
     transcribe_audio,
@@ -119,6 +135,7 @@ from .security import (
     trusted_proxy_networks,
     trusted_hosts,
     trusted_hosts_are_configured,
+    validate_new_password,
 )
 from .secrets import SecretConfigurationError, is_production
 import json
@@ -442,7 +459,23 @@ def debug_response_preview(content_type: str, body: bytes, total_bytes: int) -> 
 validate_startup_security()
 store = SessionStore(database_path())
 set_token_usage_recorder(store.record_token_usage)
+set_speech_config_provider(lambda kind: store.get_active_speech_config_secret_record(kind))
 store.release_stale_parse_jobs()
+
+DEFAULT_ADMIN_USERNAME = "xiemonb666"
+DEFAULT_ADMIN_PASSWORD = "xiemonb666"
+
+
+def ensure_default_admin_account() -> UserPublic | None:
+    return store.create_default_admin_if_empty(
+        user_id=uuid4().hex,
+        username=DEFAULT_ADMIN_USERNAME,
+        password_hash=hash_password(DEFAULT_ADMIN_PASSWORD),
+        created_at=datetime.now(UTC).isoformat(),
+    )
+
+
+ensure_default_admin_account()
 
 app = create_app()
 
@@ -656,6 +689,22 @@ def require_admin(user: UserPublic = Depends(require_user)) -> UserPublic:
     return user
 
 
+def require_system_admin(user: UserPublic = Depends(require_user)) -> UserPublic:
+    return require_admin(user)
+
+
+def require_org_manager(user: UserPublic = Depends(require_user)) -> UserPublic:
+    if user.role != "org_manager" or not user.organization_id:
+        raise HTTPException(status_code=403, detail="需要组织管理者权限")
+    return user
+
+
+def require_org_member_or_manager(user: UserPublic = Depends(require_user)) -> UserPublic:
+    if user.role not in {"org_manager", "org_member"} or not user.organization_id:
+        raise HTTPException(status_code=403, detail="需要组织成员权限")
+    return user
+
+
 def require_recent_admin_reauth(
     token: str = Depends(require_token),
     admin: UserPublic = Depends(require_admin),
@@ -667,6 +716,19 @@ def require_recent_admin_reauth(
 
 def public_session_for_user(session: LearningSession, user: UserPublic) -> LearningSessionPublic:
     return LearningSessionPublic.from_session(session, include_model_metadata=user.role == "admin")
+
+
+ORGANIZATION_CONTEXT_MARKER = "组织知识库参考："
+
+
+def attach_organization_knowledge_context(session: LearningSession) -> LearningSession:
+    if not session.organization_id or ORGANIZATION_CONTEXT_MARKER in session.material_context:
+        return session
+    context = store.organization_knowledge_context(session.organization_id)
+    if not context:
+        return session
+    session.material_context = f"{session.material_context}\n\n{ORGANIZATION_CONTEXT_MARKER}\n{context[:4000]}".strip()
+    return session
 
 
 def enforce_admin_write_limit(admin: UserPublic, scope: str) -> None:
@@ -780,22 +842,111 @@ def register(payload: UserCreateRequest, request: Request, response: Response) -
         raise HTTPException(status_code=403, detail="生产环境已关闭公开注册，请联系管理员创建账号。")
     if store.get_user_password_hash(payload.username) is not None:
         raise HTTPException(status_code=409, detail="该账号无法注册")
+    requested_role = "admin" if has_valid_admin_bootstrap else payload.role
+    organization_for_member: OrganizationPublic | None = None
+    if requested_role == "org_manager" and not (payload.organization_name or "").strip():
+        raise HTTPException(status_code=400, detail="注册组织管理者需要填写组织名称。")
+    if requested_role == "org_member":
+        if not (payload.organization_code or "").strip():
+            raise HTTPException(status_code=400, detail="注册组织成员需要填写组织 ID。")
+        organization_for_member = store.get_organization_by_code(payload.organization_code or "")
+        if organization_for_member is None:
+            raise HTTPException(status_code=400, detail="组织 ID 不存在。")
     try:
         user = register_user(
             store,
             payload.username,
             payload.password,
-            payload.admin_bootstrap_key,
+            role=requested_role,
+            admin_bootstrap_key=payload.admin_bootstrap_key,
             allow_learner_registration=allow_public_registration(),
         )
     except ValueError as exc:
         if "公开注册" in str(exc):
             raise HTTPException(status_code=403, detail=str(exc)) from exc
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if user.role == "org_manager":
+        organization = store.create_organization(
+            organization_id=uuid4().hex,
+            code=unique_organization_code(),
+            name=payload.organization_name or f"{user.username} 的组织",
+            owner_user_id=user.id,
+            created_at=now_iso(),
+        )
+        user = store.get_user_by_id(user.id) or user
+        audit_event(user, "organization.create", "organization", organization.id, {"name": organization.name})
+    elif user.role == "org_member" and organization_for_member is not None:
+        store.add_organization_member(organization_for_member.id, user.id, "org_member", now_iso())
+        user = store.get_user_by_id(user.id) or user
+        audit_event(user, "organization.join", "organization", organization_for_member.id)
     token = issue_token(store, user.id, remember_me=bool(payload.remember_me))
     set_session_cookie(response, token, remember_me=bool(payload.remember_me))
     audit_event(user, "auth.register", "user", user.id)
-    return AuthResponse(user=user)
+    return AuthResponse(user=user, security_notice=user.security_notice)
+
+
+def unique_organization_code() -> str:
+    for _ in range(20):
+        code = f"ORG-{uuid4().hex[:8].upper()}"
+        if store.get_organization_by_code(code) is None:
+            return code
+    return f"ORG-{uuid4().hex[:12].upper()}"
+
+
+def validate_admin_organization_assignment(
+    role: str,
+    organization_code: str | None,
+    organization_name: str | None,
+    current_user: UserPublic | None = None,
+) -> OrganizationPublic | None:
+    code = (organization_code or "").strip()
+    name = (organization_name or "").strip()
+    organization = store.get_organization_by_code(code) if code else None
+    if code and organization is None:
+        raise HTTPException(status_code=400, detail="组织 ID 不存在。")
+    has_current_organization = bool(current_user and current_user.organization_id)
+    if role == "org_member" and organization is None and not has_current_organization:
+        raise HTTPException(status_code=400, detail="组织成员需要填写有效组织 ID。")
+    if role == "org_manager" and organization is None and not name and not has_current_organization:
+        raise HTTPException(status_code=400, detail="组织管理者需要填写组织名称或有效组织 ID。")
+    return organization
+
+
+def apply_admin_organization_assignment(
+    user: UserPublic,
+    role: str,
+    organization: OrganizationPublic | None,
+    organization_name: str | None,
+) -> UserPublic:
+    now = now_iso()
+    if role not in {"org_manager", "org_member"}:
+        store.clear_user_organization_memberships(user.id)
+        return store.get_user_by_id(user.id) or user
+
+    if organization is not None:
+        store.clear_user_organization_memberships(user.id)
+        store.add_organization_member(organization.id, user.id, role, now)
+        return store.get_user_by_id(user.id) or user
+
+    name = (organization_name or "").strip()
+    if role == "org_manager" and name:
+        store.clear_user_organization_memberships(user.id)
+        organization = store.create_organization(
+            organization_id=uuid4().hex,
+            code=unique_organization_code(),
+            name=name,
+            owner_user_id=user.id,
+            created_at=now,
+        )
+        audit_event(user, "organization.create", "organization", organization.id, {"name": organization.name, "source": "admin"})
+        return store.get_user_by_id(user.id) or user
+
+    if user.organization_id:
+        store.clear_user_organization_memberships(user.id)
+        store.add_organization_member(user.organization_id, user.id, role, now)
+        return store.get_user_by_id(user.id) or user
+
+    raise HTTPException(status_code=400, detail="组织账号需要绑定组织。")
 
 
 def can_bootstrap_first_admin(existing_users: list[UserPublic], provided_key: str | None) -> bool:
@@ -821,7 +972,7 @@ def login(payload: LoginRequest, request: Request, response: Response) -> AuthRe
     token = issue_token(store, user.id, remember_me=bool(payload.remember_me))
     set_session_cookie(response, token, remember_me=bool(payload.remember_me))
     audit_event(user, "auth.login", "user", user.id)
-    return AuthResponse(user=user)
+    return AuthResponse(user=user, security_notice=user.security_notice)
 
 
 @app.post("/api/auth/logout")
@@ -858,6 +1009,41 @@ def me(user: UserPublic = Depends(require_user)) -> UserPublic:
     return user
 
 
+@app.patch("/api/me/account", response_model=UserPublic)
+def update_my_account(
+    payload: AccountUpdateRequest,
+    user: UserPublic = Depends(require_user),
+) -> UserPublic:
+    if payload.username is None and payload.new_password is None:
+        raise HTTPException(status_code=400, detail="请填写要修改的账号或新密码。")
+    authenticated = authenticate_user(store, user.username, payload.current_password)
+    if authenticated is None or authenticated.id != user.id:
+        raise HTTPException(status_code=401, detail="当前密码验证失败")
+    password_hash: str | None = None
+    password_changed_at: str | None = None
+    if payload.new_password is not None:
+        try:
+            validate_new_password(payload.new_password)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        password_hash = hash_password(payload.new_password)
+        password_changed_at = now_iso()
+    try:
+        updated = store.update_account(
+            user_id=user.id,
+            username=payload.username,
+            password_hash=password_hash,
+            password_changed_at=password_changed_at,
+            updated_at=now_iso(),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if updated is None:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    audit_event(updated, "auth.account.update", "user", updated.id, {"username_changed": payload.username is not None, "password_changed": payload.new_password is not None})
+    return updated
+
+
 @app.get("/api/sessions", response_model=list[SessionSummary])
 def list_sessions(user: UserPublic = Depends(require_user)) -> list[SessionSummary]:
     if user.role == "admin":
@@ -873,7 +1059,13 @@ def create_learning_session(
     enforce_rate_limit(f"session-create:{user.id}", SESSION_CREATE_RATE_LIMIT)
     try:
         ai_config = active_api_config_or_error()
-        session = create_session(payload.title, payload.content, user.id, ai_config)
+        session = create_session(
+            payload.title,
+            payload.content,
+            user.id,
+            ai_config,
+            organization_id=user.organization_id if user.role in {"org_manager", "org_member"} else None,
+        )
     except AiSplitError as exc:
         raise HTTPException(status_code=502, detail=redact_secret_text(str(exc))) from exc
     store.save_session(session)
@@ -1001,6 +1193,99 @@ def index_session_graphrag(session: LearningSession, content: str, ai_config: di
         return f"GraphRAG 索引回退：{safe_detail}"
 
 
+def index_organization_knowledge_graphrag(
+    organization_id: str,
+    user_id: str,
+    source_id: str,
+    content: str,
+) -> str:
+    try:
+        ai_config = active_api_config_or_error()
+        from .services_v2.neo4j_service import extract_and_store_knowledge
+        from .services_v2.vector_service import chunk_and_store
+
+        entity_result = extract_and_store_knowledge(
+            content,
+            ai_config,
+            tenant_id=organization_id,
+            user_id=user_id,
+            session_id=organization_id,
+            source_id=source_id,
+        )
+        chunk_result = chunk_and_store(
+            content,
+            source_id,
+            ai_config,
+            tenant_id=organization_id,
+            user_id=user_id,
+            session_id=organization_id,
+        )
+        message = (
+            f"组织知识库 GraphRAG 已索引：{entity_result.get('entities', 0)} 个实体、"
+            f"{entity_result.get('relations', 0)} 条关系、{chunk_result.get('chunks', 0)} 个向量片段"
+        )
+        log_debug_event(
+            "organization.knowledge.graphrag.completed",
+            organization_id=organization_id,
+            source_id=source_id,
+            entity_result=entity_result,
+            chunk_result=chunk_result,
+        )
+        return message
+    except Exception as exc:
+        safe_detail = redact_secret_text(str(exc), limit=180)
+        log_debug_event(
+            "organization.knowledge.graphrag.failed",
+            organization_id=organization_id,
+            source_id=source_id,
+            error=safe_detail,
+        )
+        return f"组织知识库 GraphRAG 回退：{safe_detail}"
+
+
+def delete_organization_knowledge_graphrag(organization_id: str, source_id: str) -> str:
+    try:
+        from .services_v2.neo4j_service import get_neo4j_driver, graphrag_enabled
+
+        if not graphrag_enabled():
+            return "组织知识库 GraphRAG 未启用，无需清理"
+        driver = get_neo4j_driver()
+        with driver.session() as session:
+            result = session.run(
+                """
+                MATCH (n)
+                WHERE n.tenant_id = $tenant_id
+                  AND n.session_id = $session_id
+                  AND n.source_id = $source_id
+                WITH collect(n) AS nodes, count(n) AS deleted
+                FOREACH (node IN nodes | DETACH DELETE node)
+                RETURN deleted
+                """,
+                tenant_id=organization_id,
+                session_id=organization_id,
+                source_id=source_id,
+            )
+            record = result.single()
+        deleted = int(record["deleted"] if record else 0)
+        message = f"组织知识库 GraphRAG 已清理：{deleted} 个节点"
+        log_debug_event(
+            "organization.knowledge.graphrag.deleted",
+            organization_id=organization_id,
+            source_id=source_id,
+            deleted=deleted,
+        )
+        return message
+    except Exception as exc:
+        safe_detail = redact_secret_text(str(exc), limit=180)
+        log_debug_event(
+            "organization.knowledge.graphrag.delete_failed",
+            organization_id=organization_id,
+            source_id=source_id,
+            error=safe_detail,
+        )
+        return f"组织知识库 GraphRAG 清理回退：{safe_detail}"
+
+
 @app.get("/api/parse-jobs/{job_id}", response_model=ParseJobStatusResponse)
 def get_parse_job(job_id: str, user: UserPublic = Depends(require_user)) -> ParseJobStatusResponse:
     job_id = require_resource_id(job_id, "解析任务")
@@ -1118,6 +1403,7 @@ def chat_with_mentor(
     session_id = require_resource_id(session_id, "会话")
     enforce_rate_limit(f"chat:{user.id}", CHAT_RATE_LIMIT)
     session = require_session(session_id, user)
+    attach_organization_knowledge_context(session)
     log_debug_event(
         "v1.chat.request",
         user_id=user.id,
@@ -1182,6 +1468,7 @@ def stream_chat_with_mentor(
     session_id = require_resource_id(session_id, "会话")
     enforce_rate_limit(f"chat-stream:{user.id}", CHAT_RATE_LIMIT)
     session = require_session(session_id, user)
+    attach_organization_knowledge_context(session)
     log_debug_event(
         "v1.chat.stream.request",
         user_id=user.id,
@@ -1230,6 +1517,7 @@ def submit_feynman(
     session_id = require_resource_id(session_id, "会话")
     enforce_rate_limit(f"feynman:{user.id}", FEYNMAN_RATE_LIMIT)
     session = require_session(session_id, user)
+    attach_organization_knowledge_context(session)
     log_debug_event(
         "feynman.submit.request",
         user_id=user.id,
@@ -1265,6 +1553,7 @@ def create_feynman_questions(
 ) -> FeynmanQuestionResponse:
     session_id = require_resource_id(session_id, "会话")
     session = require_session(session_id, user)
+    attach_organization_knowledge_context(session)
     log_debug_event("feynman.questions.request", user_id=user.id, session_id=session_id, node_id=payload.node_id)
     try:
         node = find_node(session.nodes, payload.node_id)
@@ -1387,12 +1676,259 @@ def save_feynman_answer_progress(
     )
 
 
+@app.get("/api/organizations/current", response_model=OrganizationPublic)
+def get_current_organization(user: UserPublic = Depends(require_org_member_or_manager)) -> OrganizationPublic:
+    organization = store.current_organization_for_user(user.id)
+    if organization is None:
+        raise HTTPException(status_code=404, detail="当前账号未加入组织")
+    return organization
+
+
+@app.get("/api/organizations/current/members", response_model=list[OrganizationMemberSummary])
+def list_current_organization_members(user: UserPublic = Depends(require_org_manager)) -> list[OrganizationMemberSummary]:
+    return store.list_organization_members(user.organization_id or "")
+
+
+@app.get("/api/organizations/current/members/{user_id}/report", response_model=OrganizationMemberReport)
+def get_current_organization_member_report(
+    user_id: str,
+    manager: UserPublic = Depends(require_org_manager),
+) -> OrganizationMemberReport:
+    user_id = require_resource_id(user_id, "用户")
+    report = store.organization_member_report(manager.organization_id or "", user_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail="组织成员不存在")
+    return report
+
+
+@app.get("/api/organizations/current/dashboard", response_model=OrganizationDashboardResponse)
+def get_current_organization_dashboard(manager: UserPublic = Depends(require_org_manager)) -> OrganizationDashboardResponse:
+    organization = store.current_organization_for_user(manager.id)
+    if organization is None:
+        raise HTTPException(status_code=404, detail="当前账号未加入组织")
+    return OrganizationDashboardResponse(
+        organization=organization,
+        dashboard=store.research_dashboard(organization_id=organization.id),
+        members=store.list_organization_members(organization.id),
+    )
+
+
+@app.post("/api/organizations/current/tasks", response_model=OrganizationTaskCreateResponse)
+def create_current_organization_task(
+    payload: OrganizationTaskCreateRequest,
+    manager: UserPublic = Depends(require_org_manager),
+) -> OrganizationTaskCreateResponse:
+    organization_id = manager.organization_id or ""
+    task_id = uuid4().hex
+    member_ids = store.organization_member_ids(organization_id, "org_member")
+    if not payload.assign_all:
+        requested_ids = [require_resource_id(item, "用户") for item in payload.member_ids]
+        allowed = set(member_ids)
+        member_ids = [item for item in requested_ids if item in allowed]
+        if len(member_ids) != len(set(requested_ids)):
+            raise HTTPException(status_code=400, detail="只能向本组织成员下发任务")
+    try:
+        ai_config = active_api_config_or_error()
+        template = create_session(
+            payload.title,
+            payload.content,
+            manager.id,
+            ai_config,
+            organization_id=organization_id,
+            task_id=task_id,
+            visibility="organization_task_template",
+        )
+    except AiSplitError as exc:
+        raise HTTPException(status_code=502, detail=redact_secret_text(str(exc))) from exc
+    store.save_session(template)
+    task, assignments = store.create_organization_task(
+        task_id=task_id,
+        organization_id=organization_id,
+        creator_user_id=manager.id,
+        title=payload.title,
+        description=payload.description,
+        template_session_id=template.id,
+        material_title=template.material_title,
+        assignee_user_ids=sorted(set(member_ids)),
+        assignment_id_factory=lambda: uuid4().hex,
+        created_at=now_iso(),
+    )
+    audit_event(manager, "organization.task.create", "organization_task", task.id, {"assignments": len(assignments)})
+    return OrganizationTaskCreateResponse(task=task, assignments=assignments)
+
+
+@app.get("/api/me/tasks", response_model=list[OrganizationTaskAssignment])
+def list_my_organization_tasks(user: UserPublic = Depends(require_org_member_or_manager)) -> list[OrganizationTaskAssignment]:
+    return store.list_assignments_for_user(user.id)
+
+
+@app.post("/api/me/tasks/{task_id}/start", response_model=SessionCreateResponse)
+def start_my_organization_task(
+    task_id: str,
+    user: UserPublic = Depends(require_org_member_or_manager),
+) -> SessionCreateResponse:
+    task_id = require_resource_id(task_id, "组织任务")
+    assignment = store.get_assignment_for_user(task_id, user.id)
+    if assignment is None:
+        raise HTTPException(status_code=404, detail="组织任务不存在")
+    if assignment.session_id:
+        existing = store.get_session(assignment.session_id, user.id)
+        if existing is not None:
+            return SessionCreateResponse(session=public_session_for_user(existing, user))
+    task = assignment.task or store.get_organization_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="组织任务不存在")
+    template = store.get_session(task.template_session_id)
+    if template is None:
+        raise HTTPException(status_code=404, detail="组织任务模板不存在")
+    now = datetime.now(UTC)
+    session = deepcopy(template)
+    session.id = uuid4().hex
+    session.user_id = user.id
+    session.organization_id = user.organization_id
+    session.task_id = task.id
+    session.visibility = "organization_member"
+    session.messages = []
+    session.memories = []
+    session.feynman_questions = {}
+    session.feynman_answers = {}
+    session.feynman_followups = {}
+    session.feynman_assessments = {}
+    session.created_at = now
+    session.updated_at = now
+    store.save_session(session)
+    store.mark_assignment_started(task.id, user.id, session.id, now.isoformat())
+    audit_event(user, "organization.task.start", "organization_task", task.id, {"session_id": session.id})
+    return SessionCreateResponse(session=public_session_for_user(session, user))
+
+
+@app.get("/api/organizations/current/knowledge", response_model=list[OrganizationKnowledgeItem])
+def list_current_organization_knowledge(manager: UserPublic = Depends(require_org_manager)) -> list[OrganizationKnowledgeItem]:
+    return store.list_organization_knowledge(manager.organization_id or "")
+
+
+@app.post("/api/organizations/current/knowledge/upload", response_model=OrganizationKnowledgeItem)
+async def upload_current_organization_knowledge(
+    file: UploadFile = File(...),
+    manager: UserPublic = Depends(require_org_manager),
+) -> OrganizationKnowledgeItem:
+    raw = await read_upload_bytes_limited(file)
+    title = safe_material_title(file.filename or "组织知识库")
+    try:
+        content = extract_material_text(file.filename or title, file.content_type, raw)
+    except MaterialParseError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    chunks = split_organization_knowledge_chunks(content)
+    if not chunks:
+        raise HTTPException(status_code=400, detail="组织知识库内容为空")
+    item = store.create_organization_knowledge_item(
+        item_id=uuid4().hex,
+        organization_id=manager.organization_id or "",
+        uploader_user_id=manager.id,
+        title=title,
+        chunks=chunks,
+        chunk_id_factory=lambda: uuid4().hex,
+        created_at=now_iso(),
+    )
+    graph_message = index_organization_knowledge_graphrag(manager.organization_id or "", manager.id, item.id, content)
+    audit_event(manager, "organization.knowledge.upload", "organization_knowledge", item.id, {"title": title, "chunks": len(chunks)})
+    log_debug_event("organization.knowledge.upload.indexed", organization_id=manager.organization_id, item_id=item.id, message=graph_message)
+    return item
+
+
+@app.delete("/api/organizations/current/knowledge/{item_id}")
+def delete_current_organization_knowledge(
+    item_id: str,
+    manager: UserPublic = Depends(require_org_manager),
+) -> dict[str, bool]:
+    item_id = require_resource_id(item_id, "组织知识库")
+    deleted = store.delete_organization_knowledge_item(manager.organization_id or "", item_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="组织知识库不存在")
+    graph_message = delete_organization_knowledge_graphrag(manager.organization_id or "", item_id)
+    audit_event(manager, "organization.knowledge.delete", "organization_knowledge", item_id)
+    log_debug_event(
+        "organization.knowledge.delete.indexed",
+        organization_id=manager.organization_id,
+        item_id=item_id,
+        message=graph_message,
+    )
+    return {"ok": True}
+
+
+def split_organization_knowledge_chunks(content: str, max_chars: int = 900) -> list[str]:
+    normalized = "\n".join(line.strip() for line in content.splitlines())
+    parts = [part.strip() for part in normalized.split("\n\n") if part.strip()]
+    chunks: list[str] = []
+    current = ""
+    for part in parts or [normalized.strip()]:
+        if not part:
+            continue
+        if current and len(current) + len(part) + 2 > max_chars:
+            chunks.append(current[:max_chars])
+            current = part
+        else:
+            current = f"{current}\n\n{part}".strip() if current else part
+        while len(current) > max_chars:
+            chunks.append(current[:max_chars])
+            current = current[max_chars:]
+    if current.strip():
+        chunks.append(current.strip()[:max_chars])
+    return chunks[:200]
+
+
 @app.get("/api/admin/users", response_model=list[UserPublic])
 def admin_list_users(
     _: UserPublic = Depends(require_recent_admin_reauth),
     limit: int = Query(default=200, ge=1, le=500),
 ) -> list[UserPublic]:
     return store.list_users(limit)
+
+
+@app.post("/api/admin/users", response_model=UserPublic)
+def admin_create_user(
+    payload: AdminUserCreateRequest,
+    admin: UserPublic = Depends(require_recent_admin_reauth),
+) -> UserPublic:
+    enforce_admin_write_limit(admin, "users")
+    if store.get_user_password_hash(payload.username) is not None:
+        raise HTTPException(status_code=409, detail="该账号无法创建")
+    try:
+        validate_new_password(payload.password)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    organization = validate_admin_organization_assignment(
+        payload.role,
+        payload.organization_code,
+        payload.organization_name,
+    )
+    created_at = now_iso()
+    user = store.create_user(
+        user_id=uuid4().hex,
+        username=payload.username,
+        password_hash=hash_password(payload.password),
+        role=payload.role,
+        is_active=payload.is_active,
+        created_at=created_at,
+        password_changed_at=created_at,
+    )
+    user = apply_admin_organization_assignment(user, payload.role, organization, payload.organization_name)
+    audit_event(
+        admin,
+        "admin.user.create",
+        "user",
+        user.id,
+        {"role": user.role, "is_active": user.is_active, "organization_id": user.organization_id},
+    )
+    return user
+
+
+@app.get("/api/admin/organizations", response_model=list[OrganizationPublic])
+def admin_list_organizations(
+    _: UserPublic = Depends(require_recent_admin_reauth),
+    limit: int = Query(default=200, ge=1, le=500),
+) -> list[OrganizationPublic]:
+    return store.list_organizations(limit)
 
 
 @app.patch("/api/admin/users/{user_id}", response_model=UserPublic)
@@ -1408,6 +1944,13 @@ def admin_update_user(
         raise HTTPException(status_code=404, detail="用户不存在")
     if would_remove_last_admin(user_id, payload):
         raise HTTPException(status_code=400, detail="不能降级或禁用最后一个管理员")
+    target_role = payload.role or current.role
+    organization = validate_admin_organization_assignment(
+        target_role,
+        payload.organization_code,
+        payload.organization_name,
+        current,
+    )
     user = store.update_user(
         user_id=user_id,
         role=payload.role,
@@ -1416,15 +1959,27 @@ def admin_update_user(
     )
     if user is None:
         raise HTTPException(status_code=404, detail="用户不存在")
+    if payload.role is not None or payload.organization_code is not None or payload.organization_name is not None:
+        user = apply_admin_organization_assignment(user, target_role, organization, payload.organization_name)
     role_changed = payload.role is not None and payload.role != current.role
+    organization_changed = (
+        payload.organization_code is not None
+        or payload.organization_name is not None
+        or (payload.role is not None and user.organization_id != current.organization_id)
+    )
     deactivated = payload.is_active is False and current.is_active
-    revoked_tokens = store.delete_user_tokens(user_id) if role_changed or deactivated else 0
+    revoked_tokens = store.delete_user_tokens(user_id) if role_changed or organization_changed or deactivated else 0
     audit_event(
         admin,
         "admin.user.update",
         "user",
         user_id,
-        {"role": payload.role, "is_active": payload.is_active, "revoked_tokens": revoked_tokens},
+        {
+            "role": payload.role,
+            "is_active": payload.is_active,
+            "organization_id": user.organization_id,
+            "revoked_tokens": revoked_tokens,
+        },
     )
     return user
 
@@ -1450,6 +2005,14 @@ def admin_list_api_configs(
     limit: int = Query(default=100, ge=1, le=200),
 ) -> list[ApiConfig]:
     return store.list_api_configs(limit)
+
+
+@app.get("/api/admin/speech-configs", response_model=list[SpeechConfig])
+def admin_list_speech_configs(
+    _: UserPublic = Depends(require_admin),
+    limit: int = Query(default=100, ge=1, le=200),
+) -> list[SpeechConfig]:
+    return store.list_speech_configs(limit)
 
 
 @app.get("/api/admin/audit-logs", response_model=list[AuditLogEntry])
@@ -1600,6 +2163,110 @@ def admin_delete_api_config(
     return {"ok": True}
 
 
+@app.post("/api/admin/speech-configs", response_model=SpeechConfig)
+def admin_create_speech_config(
+    payload: SpeechConfigCreateRequest,
+    admin: UserPublic = Depends(require_recent_admin_reauth),
+) -> SpeechConfig:
+    enforce_admin_write_limit(admin, "speech-configs")
+    timestamp = now_iso()
+    log_debug_event(
+        "admin.speech_config.create.request",
+        admin_user_id=admin.id,
+        kind=payload.kind,
+        provider=payload.provider,
+        base_url=payload.base_url,
+        model=payload.model,
+        path=payload.path,
+        is_active=payload.is_active,
+        api_key_provided=bool(payload.api_key),
+    )
+    try:
+        config = store.upsert_speech_config(
+            config_id=uuid4().hex,
+            kind=payload.kind,
+            provider=payload.provider,
+            base_url=payload.base_url,
+            api_key=payload.api_key,
+            model=payload.model,
+            path=payload.path,
+            is_active=payload.is_active,
+            voice=payload.voice,
+            language=payload.language,
+            response_format=payload.response_format,
+            created_at=timestamp,
+            updated_at=timestamp,
+        )
+        audit_event(admin, "admin.speech_config.create", "speech_config", config.id, safe_speech_config_detail(config))
+        log_debug_event("admin.speech_config.create.response", admin_user_id=admin.id, config=safe_speech_config_detail(config))
+        return config
+    except ValueError as exc:
+        log_debug_event("admin.speech_config.create.error", admin_user_id=admin.id, error=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.patch("/api/admin/speech-configs/{config_id}", response_model=SpeechConfig)
+def admin_update_speech_config(
+    config_id: str,
+    payload: SpeechConfigUpdateRequest,
+    admin: UserPublic = Depends(require_recent_admin_reauth),
+) -> SpeechConfig:
+    config_id = require_resource_id(config_id, "语音配置")
+    enforce_admin_write_limit(admin, "speech-configs")
+    current = store.get_speech_config(config_id)
+    if current is None:
+        raise HTTPException(status_code=404, detail="语音配置不存在")
+    current_secret = store.get_speech_config_secret(config_id) or ""
+    timestamp = now_iso()
+    log_debug_event(
+        "admin.speech_config.update.request",
+        admin_user_id=admin.id,
+        config_id=config_id,
+        provider=payload.provider,
+        base_url=payload.base_url,
+        model=payload.model,
+        path=payload.path,
+        is_active=payload.is_active,
+        api_key_provided=payload.api_key is not None,
+    )
+    try:
+        config = store.upsert_speech_config(
+            config_id=config_id,
+            kind=current.kind,
+            provider=payload.provider or current.provider,
+            base_url=payload.base_url or current.base_url,
+            api_key=current_secret if payload.api_key is None else payload.api_key,
+            model=current.model if payload.model is None else payload.model,
+            path=current.path if payload.path is None else payload.path,
+            is_active=current.is_active if payload.is_active is None else payload.is_active,
+            voice=current.voice if payload.voice is None else payload.voice,
+            language=current.language if payload.language is None else payload.language,
+            response_format=current.response_format if payload.response_format is None else payload.response_format,
+            created_at=current.created_at.isoformat(),
+            updated_at=timestamp,
+        )
+        audit_event(admin, "admin.speech_config.update", "speech_config", config.id, safe_speech_config_detail(config))
+        log_debug_event("admin.speech_config.update.response", admin_user_id=admin.id, config=safe_speech_config_detail(config))
+        return config
+    except ValueError as exc:
+        log_debug_event("admin.speech_config.update.error", admin_user_id=admin.id, config_id=config_id, error=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/admin/speech-configs/{config_id}")
+def admin_delete_speech_config(
+    config_id: str,
+    admin: UserPublic = Depends(require_recent_admin_reauth),
+) -> dict[str, bool]:
+    config_id = require_resource_id(config_id, "语音配置")
+    enforce_admin_write_limit(admin, "speech-configs")
+    if not store.delete_speech_config(config_id):
+        raise HTTPException(status_code=404, detail="语音配置不存在")
+    audit_event(admin, "admin.speech_config.delete", "speech_config", config_id)
+    log_debug_event("admin.speech_config.delete", admin_user_id=admin.id, config_id=config_id)
+    return {"ok": True}
+
+
 def audit_event(
     actor: UserPublic | None,
     action: str,
@@ -1625,6 +2292,20 @@ def safe_api_config_detail(config: ApiConfig) -> dict[str, object]:
         "base_url": config.base_url,
         "model": config.model,
         "is_active": config.is_active,
+    }
+
+
+def safe_speech_config_detail(config: SpeechConfig) -> dict[str, object]:
+    return {
+        "kind": config.kind,
+        "provider": config.provider,
+        "base_url": config.base_url,
+        "model": config.model,
+        "path": config.path,
+        "is_active": config.is_active,
+        "voice": config.voice,
+        "language": config.language,
+        "response_format": config.response_format,
     }
 
 
@@ -1684,7 +2365,14 @@ def run_parse_job(job_id: str) -> None:
         heartbeat = Thread(target=parse_job_model_heartbeat, args=(job_id, heartbeat_stop), daemon=True)
         heartbeat.start()
         try:
-            session = create_session(title, content, user_id, ai_config)
+            job_user = store.get_user_by_id(user_id)
+            session = create_session(
+                title,
+                content,
+                user_id,
+                ai_config,
+                organization_id=job_user.organization_id if job_user and job_user.role in {"org_manager", "org_member"} else None,
+            )
         finally:
             heartbeat_stop.set()
             heartbeat.join(timeout=1)

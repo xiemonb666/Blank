@@ -19,6 +19,7 @@ import type {
   Persona,
   Stage,
   User,
+  UserRole,
 } from "../types";
 import type { SessionSummary } from "../api";
 
@@ -67,7 +68,7 @@ function Header({
         </div>
         <div className="status-pill session-pill">
           <UserIcon size={16} />
-          <span>{user.username} · {user.role === "admin" ? "管理员" : "学习者"}</span>
+          <span>{user.username} · {roleLabel(user.role)}{user.organization_name ? ` · ${user.organization_name}` : ""}</span>
         </div>
         <div className="status-pill session-pill">
           <span>{sessionId ? "会话已记录" : "等待学习"}</span>
@@ -109,22 +110,34 @@ function AuthScreen({
   mode,
   username,
   password,
+  registerRole,
+  organizationName,
+  organizationCode,
   error,
   isBusy,
   onModeChange,
   onUsernameChange,
   onPasswordChange,
+  onRegisterRoleChange,
+  onOrganizationNameChange,
+  onOrganizationCodeChange,
   onSubmit,
   onRestore,
 }: {
   mode: "login" | "register";
   username: string;
   password: string;
+  registerRole: Exclude<UserRole, "admin">;
+  organizationName: string;
+  organizationCode: string;
   error: string;
   isBusy: boolean;
   onModeChange: (mode: "login" | "register") => void;
   onUsernameChange: (value: string) => void;
   onPasswordChange: (value: string) => void;
+  onRegisterRoleChange: (role: Exclude<UserRole, "admin">) => void;
+  onOrganizationNameChange: (value: string) => void;
+  onOrganizationCodeChange: (value: string) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onRestore: () => void;
 }) {
@@ -159,6 +172,57 @@ function AuthScreen({
               onChange={(event) => onPasswordChange(event.target.value)}
             />
           </label>
+          {mode === "register" && (
+            <>
+              <div className="auth-role-switch" aria-label="注册身份">
+                <button
+                  className={registerRole === "learner" ? "active" : ""}
+                  type="button"
+                  onClick={() => onRegisterRoleChange("learner")}
+                >
+                  个人学习者
+                </button>
+                <button
+                  className={registerRole === "org_manager" ? "active" : ""}
+                  type="button"
+                  onClick={() => onRegisterRoleChange("org_manager")}
+                >
+                  组织管理者
+                </button>
+                <button
+                  className={registerRole === "org_member" ? "active" : ""}
+                  type="button"
+                  onClick={() => onRegisterRoleChange("org_member")}
+                >
+                  组织成员
+                </button>
+              </div>
+              {registerRole === "org_manager" && (
+                <label>
+                  <span>组织名称</span>
+                  <input
+                    value={organizationName}
+                    minLength={1}
+                    maxLength={80}
+                    placeholder="例如：高一物理学习组"
+                    onChange={(event) => onOrganizationNameChange(event.target.value)}
+                  />
+                </label>
+              )}
+              {registerRole === "org_member" && (
+                <label>
+                  <span>组织 ID</span>
+                  <input
+                    value={organizationCode}
+                    minLength={4}
+                    maxLength={32}
+                    placeholder="向组织管理者获取"
+                    onChange={(event) => onOrganizationCodeChange(event.target.value)}
+                  />
+                </label>
+              )}
+            </>
+          )}
           <button className="primary-button" type="submit" disabled={isBusy}>
             {isBusy ? "处理中..." : mode === "login" ? "登录" : "注册并进入"}
             <ArrowRight size={18} />
@@ -186,6 +250,19 @@ function AuthScreen({
       </section>
     </main>
   );
+}
+
+function roleLabel(role: UserRole) {
+  switch (role) {
+    case "admin":
+      return "系统管理员";
+    case "org_manager":
+      return "组织管理者";
+    case "org_member":
+      return "组织成员";
+    case "learner":
+      return "个人学习者";
+  }
 }
 
 function SidePanel({

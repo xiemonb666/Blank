@@ -1,50 +1,124 @@
-import { FormEvent } from "react";
-import { ArrowRight } from "lucide-react";
-import type { ApiConfigInput } from "../api";
+import { FormEvent, useState } from "react";
+import { ArrowRight, Plus, Save } from "lucide-react";
+import type { AdminUserCreateInput, AdminUserUpdateInput, ApiConfigInput, SpeechConfigInput } from "../api";
 import { PagedList } from "../components/DesignPrimitives";
 import { V2ModeToggle } from "../components/V2ModeToggle";
-import type { ApiConfig, User } from "../types";
+import type { ApiConfig, Organization, SpeechConfig, User, UserRole } from "../types";
 
 interface AdminStageProps {
   users: User[];
+  organizations: Organization[];
   apiConfigs: ApiConfig[];
+  speechConfigs: SpeechConfig[];
   form: ApiConfigInput;
+  speechForm: SpeechConfigInput;
   isBusy: boolean;
   v2Enabled: boolean;
   onFormChange: (value: ApiConfigInput) => void;
+  onSpeechFormChange: (value: SpeechConfigInput) => void;
   onSaveConfig: (event: FormEvent<HTMLFormElement>) => void;
+  onSaveSpeechConfig: (event: FormEvent<HTMLFormElement>) => void;
   onRefresh: () => void;
   onToggleV2: () => void;
   onEditConfig: (config: ApiConfig) => void;
   onToggleConfig: (config: ApiConfig) => void;
   onDeleteConfig: (config: ApiConfig) => void;
-  onRoleChange: (user: User, role: "admin" | "learner") => void;
+  onEditSpeechConfig: (config: SpeechConfig) => void;
+  onToggleSpeechConfig: (config: SpeechConfig) => void;
+  onDeleteSpeechConfig: (config: SpeechConfig) => void;
+  onCreateUser: (payload: AdminUserCreateInput) => void;
+  onRoleChange: (user: User, payload: AdminUserUpdateInput) => void;
   onActiveToggle: (user: User) => void;
 }
 
 export function AdminStage({
   users,
+  organizations,
   apiConfigs,
+  speechConfigs,
   form,
+  speechForm,
   isBusy,
   v2Enabled,
   onFormChange,
+  onSpeechFormChange,
   onSaveConfig,
+  onSaveSpeechConfig,
   onRefresh,
   onToggleV2,
   onEditConfig,
   onToggleConfig,
   onDeleteConfig,
+  onEditSpeechConfig,
+  onToggleSpeechConfig,
+  onDeleteSpeechConfig,
+  onCreateUser,
   onRoleChange,
   onActiveToggle,
 }: AdminStageProps) {
+  const [createDraft, setCreateDraft] = useState<AdminUserCreateInput>({
+    username: "",
+    password: "",
+    role: "learner",
+    is_active: true,
+    organization_name: "",
+    organization_code: "",
+  });
+  const [userDrafts, setUserDrafts] = useState<Record<string, { role: UserRole; organizationCode: string; organizationName: string }>>({});
   const activeConfigCount = apiConfigs.filter((config) => isKnownApiProvider(config.provider) && config.is_active).length;
+  const activeSpeechCount = speechConfigs.filter((config) => config.is_active).length;
   const activeUserCount = users.filter((item) => item.is_active).length;
   const invalidConfigCount = apiConfigs.filter((config) => !isKnownApiProvider(config.provider)).length;
   const todayTokens = users.reduce((total, item) => total + (item.today_tokens ?? 0), 0);
   const totalTokens = users.reduce((total, item) => total + (item.total_tokens ?? 0), 0);
   const applyPreset = (preset: ApiConfigInput) => {
     onFormChange({ ...form, ...preset, api_key: form.api_key });
+  };
+  const applySpeechPreset = (preset: SpeechConfigInput) => {
+    onSpeechFormChange({ ...speechForm, ...preset, api_key: speechForm.api_key });
+  };
+  const organizationCodes = organizations.map((organization) => organization.code);
+  const updateUserDraft = (
+    userId: string,
+    user: User,
+    patch: Partial<{ role: UserRole; organizationCode: string; organizationName: string }>,
+  ) => {
+    setUserDrafts((current) => ({
+      ...current,
+      [userId]: {
+        role: current[userId]?.role ?? user.role,
+        organizationCode: current[userId]?.organizationCode ?? user.organization_code ?? "",
+        organizationName: current[userId]?.organizationName ?? "",
+        ...patch,
+      },
+    }));
+  };
+  const userDraftFor = (item: User) => (
+    userDrafts[item.id] ?? {
+      role: item.role,
+      organizationCode: item.organization_code ?? "",
+      organizationName: "",
+    }
+  );
+  const submitCreateUser = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    onCreateUser(createDraft);
+    setCreateDraft({
+      username: "",
+      password: "",
+      role: "learner",
+      is_active: true,
+      organization_name: "",
+      organization_code: "",
+    });
+  };
+  const applyUserDraft = (item: User) => {
+    const draft = userDraftFor(item);
+    onRoleChange(item, {
+      role: draft.role,
+      organization_code: draft.organizationCode,
+      organization_name: draft.organizationName,
+    });
   };
 
   return (
@@ -59,6 +133,10 @@ export function AdminStage({
           <div>
             <span>活跃模型</span>
             <strong>{activeConfigCount}/{apiConfigs.length}</strong>
+          </div>
+          <div>
+            <span>语音服务</span>
+            <strong>{activeSpeechCount}/{speechConfigs.length}</strong>
           </div>
           <div>
             <span>今日 Token</span>
@@ -150,6 +228,127 @@ export function AdminStage({
             </button>
           </div>
         </form>
+
+        <form className="admin-form" onSubmit={onSaveSpeechConfig}>
+          <div className="provider-presets" aria-label="常用语音预设">
+            {SPEECH_CONFIG_PRESETS.map((preset) => (
+              <button
+                className="secondary-button compact"
+                type="button"
+                key={preset.label}
+                onClick={() => applySpeechPreset(preset.value)}
+                disabled={isBusy}
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
+          <label>
+            <span>类型</span>
+            <select
+              value={speechForm.kind}
+              onChange={(event) =>
+                onSpeechFormChange({
+                  ...speechForm,
+                  kind: event.target.value as SpeechConfigInput["kind"],
+                  path: event.target.value === "asr" ? "/v1/audio/transcriptions" : "/v1/audio/speech",
+                  model: event.target.value === "asr" ? "SenseVoiceSmall" : "supertonic",
+                })
+              }
+            >
+              <option value="asr">ASR</option>
+              <option value="tts">TTS</option>
+            </select>
+          </label>
+          <label>
+            <span>Provider</span>
+            <input
+              value={speechForm.provider}
+              onChange={(event) => onSpeechFormChange({ ...speechForm, provider: event.target.value })}
+              placeholder={speechForm.kind === "asr" ? "sensevoice-openai" : "supertonic-http"}
+            />
+          </label>
+          <label>
+            <span>Base URL</span>
+            <input
+              value={speechForm.base_url}
+              onChange={(event) => onSpeechFormChange({ ...speechForm, base_url: event.target.value })}
+              placeholder={speechForm.kind === "asr" ? "http://127.0.0.1:10098" : "http://127.0.0.1:7788"}
+            />
+          </label>
+          <label>
+            <span>API Key</span>
+            <input
+              value={speechForm.api_key}
+              onChange={(event) => onSpeechFormChange({ ...speechForm, api_key: event.target.value })}
+              placeholder={speechForm.kind === "asr" ? "blank-local-asr" : "blank-local-tts"}
+            />
+          </label>
+          <label>
+            <span>Model</span>
+            <input
+              value={speechForm.model}
+              onChange={(event) => onSpeechFormChange({ ...speechForm, model: event.target.value })}
+              placeholder={speechForm.kind === "asr" ? "SenseVoiceSmall" : "supertonic"}
+            />
+          </label>
+          <label>
+            <span>Path</span>
+            <input
+              value={speechForm.path}
+              onChange={(event) => onSpeechFormChange({ ...speechForm, path: event.target.value })}
+              placeholder={speechForm.kind === "asr" ? "/v1/audio/transcriptions" : "/v1/audio/speech"}
+            />
+          </label>
+          {speechForm.kind === "tts" && (
+            <>
+              <label>
+                <span>Voice</span>
+                <input
+                  value={speechForm.voice ?? ""}
+                  onChange={(event) => onSpeechFormChange({ ...speechForm, voice: event.target.value })}
+                  placeholder="F1"
+                />
+              </label>
+              <label>
+                <span>Language</span>
+                <input
+                  value={speechForm.language ?? ""}
+                  onChange={(event) => onSpeechFormChange({ ...speechForm, language: event.target.value })}
+                  placeholder="zh"
+                />
+              </label>
+              <label>
+                <span>Format</span>
+                <select
+                  value={speechForm.response_format ?? "wav"}
+                  onChange={(event) => onSpeechFormChange({ ...speechForm, response_format: event.target.value })}
+                >
+                  <option value="wav">wav</option>
+                  <option value="mp3">mp3</option>
+                  <option value="opus">opus</option>
+                </select>
+              </label>
+            </>
+          )}
+          <label className="toggle-line">
+            <input
+              type="checkbox"
+              checked={speechForm.is_active}
+              onChange={(event) => onSpeechFormChange({ ...speechForm, is_active: event.target.checked })}
+            />
+            <span>启用</span>
+          </label>
+          <div className="flow-actions">
+            <button className="secondary-button" type="button" onClick={onRefresh} disabled={isBusy}>
+              刷新
+            </button>
+            <button className="primary-button" type="submit" disabled={isBusy}>
+              保存语音配置
+              <ArrowRight size={18} />
+            </button>
+          </div>
+        </form>
       </section>
 
       <div className="admin-stack">
@@ -214,54 +413,231 @@ export function AdminStage({
         <section className="admin-panel admin-list-panel">
           <div className="section-heading admin-heading-row">
             <div>
+              <p className="eyebrow">Speech</p>
+              <h3>语音配置</h3>
+            </div>
+            <b>{speechConfigs.length}</b>
+          </div>
+          <PagedList
+            items={speechConfigs}
+            pageSize={2}
+            ariaLabel="语音配置"
+            className="admin-list-pager"
+            empty={<p className="admin-empty">暂无语音配置。</p>}
+            renderItem={(config) => (
+              <div className="admin-row" key={config.id}>
+                <div>
+                  <strong>{speechKindLabel(config.kind)} · {config.provider}</strong>
+                  <span>{config.base_url}</span>
+                  <small>
+                    {config.model} · {config.path} · {config.api_key_masked || "无 key"}
+                    {config.kind === "tts" && config.voice ? ` · ${config.voice}` : ""}
+                  </small>
+                </div>
+                <div className="row-actions">
+                  <b>{config.is_active ? "启用" : "停用"}</b>
+                  <button
+                    className="secondary-button compact"
+                    type="button"
+                    onClick={() => onEditSpeechConfig(config)}
+                    disabled={isBusy}
+                  >
+                    载入
+                  </button>
+                  <button
+                    className="secondary-button compact"
+                    type="button"
+                    onClick={() => onToggleSpeechConfig(config)}
+                    disabled={isBusy}
+                  >
+                    {config.is_active ? "停用" : "启用"}
+                  </button>
+                  <button
+                    className="secondary-button compact danger"
+                    type="button"
+                    onClick={() => onDeleteSpeechConfig(config)}
+                    disabled={isBusy}
+                  >
+                    删除
+                  </button>
+                </div>
+              </div>
+            )}
+          />
+        </section>
+
+        <section className="admin-panel admin-list-panel">
+          <div className="section-heading admin-heading-row">
+            <div>
               <p className="eyebrow">Users</p>
               <h3>用户与权限</h3>
             </div>
             <b>{users.length}</b>
           </div>
+          <form className="admin-user-create-form" onSubmit={submitCreateUser}>
+            <label>
+              <span>账号</span>
+              <input
+                value={createDraft.username}
+                minLength={2}
+                maxLength={32}
+                onChange={(event) => setCreateDraft({ ...createDraft, username: event.target.value })}
+                placeholder="username"
+              />
+            </label>
+            <label>
+              <span>密码</span>
+              <input
+                type="password"
+                value={createDraft.password}
+                minLength={8}
+                onChange={(event) => setCreateDraft({ ...createDraft, password: event.target.value })}
+                placeholder="至少 8 位"
+              />
+            </label>
+            <label>
+              <span>角色</span>
+              <select
+                value={createDraft.role}
+                onChange={(event) => setCreateDraft({ ...createDraft, role: event.target.value as UserRole })}
+              >
+                <option value="learner">个人学习者</option>
+                <option value="org_member">组织成员</option>
+                <option value="org_manager">组织管理者</option>
+                <option value="admin">系统管理员</option>
+              </select>
+            </label>
+            {createDraft.role === "org_member" && (
+              <label>
+                <span>组织 ID</span>
+                <input
+                  value={createDraft.organization_code ?? ""}
+                  list="admin-organization-codes"
+                  minLength={4}
+                  maxLength={32}
+                  onChange={(event) => setCreateDraft({ ...createDraft, organization_code: event.target.value })}
+                  placeholder="ORG-XXXX"
+                />
+              </label>
+            )}
+            {createDraft.role === "org_manager" && (
+              <>
+                <label>
+                  <span>新组织名</span>
+                  <input
+                    value={createDraft.organization_name ?? ""}
+                    maxLength={80}
+                    onChange={(event) => setCreateDraft({ ...createDraft, organization_name: event.target.value })}
+                    placeholder="例如：高一物理组"
+                  />
+                </label>
+                <label>
+                  <span>组织 ID</span>
+                  <input
+                    value={createDraft.organization_code ?? ""}
+                    list="admin-organization-codes"
+                    maxLength={32}
+                    onChange={(event) => setCreateDraft({ ...createDraft, organization_code: event.target.value })}
+                    placeholder="绑定已有组织"
+                  />
+                </label>
+              </>
+            )}
+            <label className="toggle-line">
+              <input
+                type="checkbox"
+                checked={createDraft.is_active ?? true}
+                onChange={(event) => setCreateDraft({ ...createDraft, is_active: event.target.checked })}
+              />
+              <span>启用</span>
+            </label>
+            <button className="primary-button compact" type="submit" disabled={isBusy}>
+              <Plus size={16} />
+              创建
+            </button>
+            <datalist id="admin-organization-codes">
+              {organizationCodes.map((code) => (
+                <option value={code} key={code} />
+              ))}
+            </datalist>
+          </form>
           <PagedList
             items={users}
             pageSize={2}
             ariaLabel="用户与权限"
             className="admin-list-pager"
             empty={<p className="admin-empty">暂无用户。</p>}
-            renderItem={(item) => (
-              <div className="admin-row user-row" key={item.id}>
-                <div>
-                  <strong>{item.username}</strong>
-                  <span>{item.role === "admin" ? "管理员" : "学习者"}</span>
-                  <small>{item.is_active ? "账号启用" : "账号停用"}</small>
-                  <div className="user-token-metrics" aria-label={`${item.username} token 用量`}>
-                    <span title={`${item.total_tokens ?? 0} tokens`}>
-                      <b>{formatTokenCount(item.total_tokens ?? 0)}</b>
-                      总 token
-                    </span>
-                    <span title={`${item.today_tokens ?? 0} tokens`}>
-                      <b>{formatTokenCount(item.today_tokens ?? 0)}</b>
-                      今日 token
-                    </span>
+            renderItem={(item) => {
+              const draft = userDraftFor(item);
+              return (
+                <div className="admin-row user-row" key={item.id}>
+                  <div>
+                    <strong>{item.username}</strong>
+                    <span>{roleLabel(item.role)}{item.organization_name ? ` · ${item.organization_name}` : ""}</span>
+                    <small>{item.is_active ? "账号启用" : "账号停用"}{item.organization_code ? ` · ${item.organization_code}` : ""}</small>
+                    <div className="user-token-metrics" aria-label={`${item.username} token 用量`}>
+                      <span title={`${item.total_tokens ?? 0} tokens`}>
+                        <b>{formatTokenCount(item.total_tokens ?? 0)}</b>
+                        总 token
+                      </span>
+                      <span title={`${item.today_tokens ?? 0} tokens`}>
+                        <b>{formatTokenCount(item.today_tokens ?? 0)}</b>
+                        今日 token
+                      </span>
+                    </div>
+                  </div>
+                  <div className="row-actions user-role-actions">
+                    <select
+                      className="compact-role-select"
+                      value={draft.role}
+                      onChange={(event) => updateUserDraft(item.id, item, { role: event.target.value as UserRole })}
+                      disabled={isBusy}
+                    >
+                      <option value="admin">系统管理员</option>
+                      <option value="org_manager">组织管理者</option>
+                      <option value="org_member">组织成员</option>
+                      <option value="learner">个人学习者</option>
+                    </select>
+                    {(draft.role === "org_manager" || draft.role === "org_member") && (
+                      <input
+                        className="compact-org-input"
+                        value={draft.organizationCode}
+                        list="admin-organization-codes"
+                        onChange={(event) => updateUserDraft(item.id, item, { organizationCode: event.target.value })}
+                        placeholder="组织 ID"
+                        disabled={isBusy}
+                      />
+                    )}
+                    {draft.role === "org_manager" && (
+                      <input
+                        className="compact-org-input"
+                        value={draft.organizationName}
+                        onChange={(event) => updateUserDraft(item.id, item, { organizationName: event.target.value })}
+                        placeholder="新组织名"
+                        disabled={isBusy}
+                      />
+                    )}
+                    <button
+                      className="secondary-button compact"
+                      type="button"
+                      onClick={() => applyUserDraft(item)}
+                      disabled={isBusy}
+                    >
+                      <Save size={14} />
+                      应用
+                    </button>
+                    <button
+                      className="secondary-button compact"
+                      type="button"
+                      onClick={() => onActiveToggle(item)}
+                      disabled={isBusy}
+                    >
+                      {item.is_active ? "停用" : "启用"}
+                    </button>
                   </div>
                 </div>
-                <div className="row-actions">
-                  <button
-                    className="secondary-button compact"
-                    type="button"
-                    onClick={() => onRoleChange(item, item.role === "admin" ? "learner" : "admin")}
-                    disabled={isBusy}
-                  >
-                    {item.role === "admin" ? "降为学习者" : "设为管理员"}
-                  </button>
-                  <button
-                    className="secondary-button compact"
-                    type="button"
-                    onClick={() => onActiveToggle(item)}
-                    disabled={isBusy}
-                  >
-                    {item.is_active ? "停用" : "启用"}
-                  </button>
-                </div>
-              </div>
-            )}
+              );
+            }}
           />
         </section>
       </div>
@@ -277,6 +653,23 @@ function formatTokenCount(value: number) {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}m`;
   if (value >= 1_000) return `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}k`;
   return `${value}`;
+}
+
+function roleLabel(role: UserRole) {
+  switch (role) {
+    case "admin":
+      return "系统管理员";
+    case "org_manager":
+      return "组织管理者";
+    case "org_member":
+      return "组织成员";
+    case "learner":
+      return "个人学习者";
+  }
+}
+
+function speechKindLabel(kind: SpeechConfig["kind"]) {
+  return kind === "asr" ? "ASR" : "TTS";
 }
 
 const API_CONFIG_PRESETS: Array<{ label: string; value: ApiConfigInput }> = [
@@ -308,6 +701,39 @@ const API_CONFIG_PRESETS: Array<{ label: string; value: ApiConfigInput }> = [
       api_key: "",
       model: "gpt-4.1-mini",
       is_active: true,
+    },
+  },
+];
+
+const SPEECH_CONFIG_PRESETS: Array<{ label: string; value: SpeechConfigInput }> = [
+  {
+    label: "SenseVoice",
+    value: {
+      kind: "asr",
+      provider: "sensevoice-openai",
+      base_url: "http://127.0.0.1:10098",
+      api_key: "",
+      model: "SenseVoiceSmall",
+      path: "/v1/audio/transcriptions",
+      is_active: true,
+      voice: "",
+      language: "zh",
+      response_format: "",
+    },
+  },
+  {
+    label: "Supertonic",
+    value: {
+      kind: "tts",
+      provider: "supertonic-http",
+      base_url: "http://127.0.0.1:7788",
+      api_key: "",
+      model: "supertonic",
+      path: "/v1/audio/speech",
+      is_active: true,
+      voice: "F1",
+      language: "zh",
+      response_format: "wav",
     },
   },
 ];

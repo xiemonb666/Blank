@@ -11,6 +11,13 @@ import type {
   MemoryEntry,
   Message,
   NodeLearningProfile,
+  Organization,
+  OrganizationDashboard,
+  OrganizationKnowledgeItem,
+  OrganizationMemberReport,
+  OrganizationMemberSummary,
+  OrganizationTaskAssignment,
+  OrganizationTaskCreateResponse,
   Persona,
   QuestionDiagnosticItem,
   ResearchBlindReviewExport,
@@ -19,6 +26,8 @@ import type {
   ResearchExperimentImportResponse,
   ResearchExperimentRecordInput,
   SpeechCapabilities,
+  SpeechConfig,
+  SpeechConfigKind,
   SpeechTranscription,
   TutorSettings,
   User,
@@ -67,6 +76,9 @@ function resolveApiBaseUrl(configured?: string) {
 
 export interface LearningSession {
   id: string;
+  organization_id?: string | null;
+  task_id?: string | null;
+  visibility?: "personal" | "organization_task_template" | "organization_member";
   material_title: string;
   nodes: KnowledgeNode[];
   active_node_id: string;
@@ -195,6 +207,7 @@ export interface FeynmanAnswerSaveResponse {
 
 export interface AuthResponse {
   user: User;
+  security_notice?: User["security_notice"];
 }
 
 export interface ApiConfigInput {
@@ -203,6 +216,19 @@ export interface ApiConfigInput {
   api_key: string;
   model: string;
   is_active: boolean;
+}
+
+export interface SpeechConfigInput {
+  kind: SpeechConfigKind;
+  provider: string;
+  base_url: string;
+  api_key: string;
+  model: string;
+  path: string;
+  is_active: boolean;
+  voice?: string | null;
+  language?: string | null;
+  response_format?: string | null;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -274,10 +300,24 @@ function formatValidationError(error: { msg?: string; loc?: string[] }) {
   return `${label}${error.msg ? `：${error.msg}` : "格式不正确"}`;
 }
 
-export function register(username: string, password: string, rememberMe: boolean = true) {
+export type RegisterOptions = {
+  role?: UserRole;
+  organization_name?: string;
+  organization_code?: string;
+  remember_me?: boolean;
+};
+
+export function register(username: string, password: string, options: RegisterOptions = {}) {
   return request<AuthResponse>("/api/auth/register", {
     method: "POST",
-    body: JSON.stringify({ username, password, remember_me: rememberMe }),
+    body: JSON.stringify({
+      username,
+      password,
+      role: options.role ?? "learner",
+      organization_name: options.organization_name || undefined,
+      organization_code: options.organization_code || undefined,
+      remember_me: options.remember_me ?? true,
+    }),
   });
 }
 
@@ -311,6 +351,16 @@ export function reauthenticate(password: string) {
     {
       method: "POST",
       body: JSON.stringify({ password }),
+    },
+  );
+}
+
+export function updateMyAccount(payload: { current_password: string; username?: string; new_password?: string }) {
+  return request<User>(
+    "/api/me/account",
+    {
+      method: "PATCH",
+      body: JSON.stringify(payload),
     },
   );
 }
@@ -626,7 +676,33 @@ export function listUsers() {
   return request<User[]>("/api/admin/users");
 }
 
-export function updateUser(userId: string, payload: { role?: UserRole; is_active?: boolean }) {
+export interface AdminUserCreateInput {
+  username: string;
+  password: string;
+  role: UserRole;
+  is_active?: boolean;
+  organization_name?: string;
+  organization_code?: string;
+}
+
+export interface AdminUserUpdateInput {
+  role?: UserRole;
+  is_active?: boolean;
+  organization_name?: string;
+  organization_code?: string;
+}
+
+export function createUser(payload: AdminUserCreateInput) {
+  return request<User>(
+    "/api/admin/users",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export function updateUser(userId: string, payload: AdminUserUpdateInput) {
   return request<User>(
     `/api/admin/users/${userId}`,
     {
@@ -636,12 +712,90 @@ export function updateUser(userId: string, payload: { role?: UserRole; is_active
   );
 }
 
+export function listOrganizations() {
+  return request<Organization[]>("/api/admin/organizations");
+}
+
 export function listApiConfigs() {
   return request<ApiConfig[]>("/api/admin/api-configs");
 }
 
+export function listSpeechConfigs() {
+  return request<SpeechConfig[]>("/api/admin/speech-configs");
+}
+
 export function getResearchDashboard() {
   return request<ResearchDashboard>("/api/admin/research-dashboard");
+}
+
+export function getCurrentOrganization() {
+  return request<Organization>("/api/organizations/current");
+}
+
+export function listOrganizationMembers() {
+  return request<OrganizationMemberSummary[]>("/api/organizations/current/members");
+}
+
+export function getOrganizationMemberReport(userId: string) {
+  return request<OrganizationMemberReport>(`/api/organizations/current/members/${userId}/report`);
+}
+
+export function getOrganizationDashboard() {
+  return request<OrganizationDashboard>("/api/organizations/current/dashboard");
+}
+
+export function createOrganizationTask(payload: {
+  title: string;
+  content: string;
+  description?: string;
+  assign_all?: boolean;
+  member_ids?: string[];
+}) {
+  return request<OrganizationTaskCreateResponse>(
+    "/api/organizations/current/tasks",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export function listMyTasks() {
+  return request<OrganizationTaskAssignment[]>("/api/me/tasks");
+}
+
+export function startMyTask(taskId: string) {
+  return request<{ session: LearningSession }>(
+    `/api/me/tasks/${taskId}/start`,
+    {
+      method: "POST",
+    },
+  );
+}
+
+export function listOrganizationKnowledge() {
+  return request<OrganizationKnowledgeItem[]>("/api/organizations/current/knowledge");
+}
+
+export function uploadOrganizationKnowledge(file: File) {
+  const formData = new FormData();
+  formData.append("file", file);
+  return request<OrganizationKnowledgeItem>(
+    "/api/organizations/current/knowledge/upload",
+    {
+      method: "POST",
+      body: formData,
+    },
+  );
+}
+
+export function deleteOrganizationKnowledge(itemId: string) {
+  return request<{ ok: boolean }>(
+    `/api/organizations/current/knowledge/${itemId}`,
+    {
+      method: "DELETE",
+    },
+  );
 }
 
 export function importResearchExperiments(records: ResearchExperimentRecordInput[]) {
@@ -685,6 +839,35 @@ export function updateApiConfig(configId: string, payload: Partial<ApiConfigInpu
 export function deleteApiConfig(configId: string) {
   return request<{ ok: boolean }>(
     `/api/admin/api-configs/${configId}`,
+    {
+      method: "DELETE",
+    },
+  );
+}
+
+export function createSpeechConfig(payload: SpeechConfigInput) {
+  return request<SpeechConfig>(
+    "/api/admin/speech-configs",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export function updateSpeechConfig(configId: string, payload: Partial<SpeechConfigInput>) {
+  return request<SpeechConfig>(
+    `/api/admin/speech-configs/${configId}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export function deleteSpeechConfig(configId: string) {
+  return request<{ ok: boolean }>(
+    `/api/admin/speech-configs/${configId}`,
     {
       method: "DELETE",
     },
