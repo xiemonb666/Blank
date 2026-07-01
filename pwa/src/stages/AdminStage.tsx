@@ -1,7 +1,7 @@
 import { FormEvent, useState } from "react";
 import { ArrowRight, Plus, Save } from "lucide-react";
 import type { AdminUserCreateInput, AdminUserUpdateInput, ApiConfigInput, SpeechConfigInput } from "../api";
-import { PagedList } from "../components/DesignPrimitives";
+import { PagedList, SegmentedControl } from "../components/DesignPrimitives";
 import { V2ModeToggle } from "../components/V2ModeToggle";
 import type { ApiConfig, Organization, SpeechConfig, User, UserRole } from "../types";
 
@@ -31,6 +31,14 @@ interface AdminStageProps {
   onActiveToggle: (user: User) => void;
 }
 
+type AdminTab = "model" | "speech" | "users";
+
+const adminTabs: Record<AdminTab, { label: string; caption: string }> = {
+  model: { label: "模型", caption: "配置默认模型接口和可用 Provider。" },
+  speech: { label: "语音", caption: "管理 ASR/TTS 服务配置。" },
+  users: { label: "用户", caption: "创建账号并调整角色权限。" },
+};
+
 export function AdminStage({
   users,
   organizations,
@@ -56,6 +64,7 @@ export function AdminStage({
   onRoleChange,
   onActiveToggle,
 }: AdminStageProps) {
+  const [activeTab, setActiveTab] = useState<AdminTab>(() => resolveInitialAdminTab());
   const [createDraft, setCreateDraft] = useState<AdminUserCreateInput>({
     username: "",
     password: "",
@@ -122,8 +131,8 @@ export function AdminStage({
   };
 
   return (
-    <div className="admin-layout">
-      <section className="admin-panel admin-config-panel">
+    <div className="admin-layout admin-tabbed">
+      <section className="admin-panel admin-command-panel">
         <div className="section-heading">
           <p className="eyebrow">API Settings</p>
           <h2>后台管理</h2>
@@ -158,7 +167,25 @@ export function AdminStage({
           </div>
           <V2ModeToggle enabled={v2Enabled} onToggle={onToggleV2} />
         </div>
-        <form className="admin-form" onSubmit={onSaveConfig}>
+        <SegmentedControl
+          label="后台管理视图"
+          value={activeTab}
+          options={adminTabs}
+          className="admin-tabs"
+          onChange={setActiveTab}
+        />
+      </section>
+
+      {activeTab === "model" && (
+        <>
+          <section className="admin-panel admin-config-panel admin-tab-panel">
+            <div className="section-heading admin-heading-row">
+              <div>
+                <p className="eyebrow">Model Provider</p>
+                <h3>模型接口</h3>
+              </div>
+            </div>
+            <form className="admin-form" onSubmit={onSaveConfig}>
           <div className="provider-presets" aria-label="常用模型预设">
             {API_CONFIG_PRESETS.map((preset) => (
               <button
@@ -227,8 +254,20 @@ export function AdminStage({
               <ArrowRight size={18} />
             </button>
           </div>
-        </form>
+            </form>
+          </section>
+        </>
+      )}
 
+      {activeTab === "speech" && (
+        <>
+          <section className="admin-panel admin-config-panel admin-tab-panel">
+            <div className="section-heading admin-heading-row">
+              <div>
+                <p className="eyebrow">Speech Provider</p>
+                <h3>语音接口</h3>
+              </div>
+            </div>
         <form className="admin-form" onSubmit={onSaveSpeechConfig}>
           <div className="provider-presets" aria-label="常用语音预设">
             {SPEECH_CONFIG_PRESETS.map((preset) => (
@@ -350,8 +389,11 @@ export function AdminStage({
           </div>
         </form>
       </section>
+        </>
+      )}
 
-      <div className="admin-stack">
+      <div className={`admin-stack ${activeTab === "users" ? "admin-users-stack" : ""}`}>
+        {activeTab === "model" && (
         <section className="admin-panel admin-list-panel">
           <div className="section-heading admin-heading-row">
             <div>
@@ -409,7 +451,9 @@ export function AdminStage({
             }}
           />
         </section>
+        )}
 
+        {activeTab === "speech" && (
         <section className="admin-panel admin-list-panel">
           <div className="section-heading admin-heading-row">
             <div>
@@ -465,8 +509,10 @@ export function AdminStage({
             )}
           />
         </section>
+        )}
 
-        <section className="admin-panel admin-list-panel">
+        {activeTab === "users" && (
+        <section className="admin-panel admin-list-panel admin-users-panel">
           <div className="section-heading admin-heading-row">
             <div>
               <p className="eyebrow">Users</p>
@@ -563,7 +609,7 @@ export function AdminStage({
           </form>
           <PagedList
             items={users}
-            pageSize={2}
+            pageSize={1}
             ariaLabel="用户与权限"
             className="admin-list-pager"
             empty={<p className="admin-empty">暂无用户。</p>}
@@ -574,7 +620,7 @@ export function AdminStage({
                   <div>
                     <strong>{item.username}</strong>
                     <span>{roleLabel(item.role)}{item.organization_name ? ` · ${item.organization_name}` : ""}</span>
-                    <small>{item.is_active ? "账号启用" : "账号停用"}{item.organization_code ? ` · ${item.organization_code}` : ""}</small>
+                    <small>{item.username} · {roleLabel(item.role)} · {item.is_active ? "账号启用" : "账号停用"}{item.organization_code ? ` · ${item.organization_code}` : ""}</small>
                     <div className="user-token-metrics" aria-label={`${item.username} token 用量`}>
                       <span title={`${item.total_tokens ?? 0} tokens`}>
                         <b>{formatTokenCount(item.total_tokens ?? 0)}</b>
@@ -640,6 +686,7 @@ export function AdminStage({
             }}
           />
         </section>
+        )}
       </div>
     </div>
   );
@@ -737,3 +784,9 @@ const SPEECH_CONFIG_PRESETS: Array<{ label: string; value: SpeechConfigInput }> 
     },
   },
 ];
+
+function resolveInitialAdminTab(): AdminTab {
+  if (!import.meta.env.DEV || typeof window === "undefined") return "model";
+  const tab = new URLSearchParams(window.location.search).get("ui-review-admin");
+  return tab === "speech" || tab === "users" ? tab : "model";
+}

@@ -356,7 +356,7 @@ select {
 }
 
 .research-tabs {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
 .research-panel {
@@ -366,6 +366,14 @@ select {
 
 .research-wide {
   grid-column: span 8;
+}
+
+.research-overview-metrics {
+  grid-column: span 6;
+}
+
+.research-compact {
+  grid-column: span 3;
 }
 
 .research-metric-grid,
@@ -396,16 +404,45 @@ select {
   grid-template-columns: minmax(260px, 0.72fr) minmax(0, 1.28fr);
 }
 
+.admin-layout.admin-tabbed {
+  grid-template-columns: minmax(300px, 0.76fr) minmax(0, 1.24fr);
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
 .admin-stack {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.admin-tabbed .admin-stack {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.admin-tabbed .admin-users-stack {
+  grid-column: 1 / -1;
 }
 
 .admin-panel {
   padding: clamp(12px, 1.3vw, 18px);
 }
 
+.admin-command-panel {
+  gap: 8px;
+}
+
+.admin-command-panel .section-heading {
+  padding-bottom: 8px;
+}
+
+.admin-command-panel .admin-status-strip {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .admin-config-panel {
   grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.admin-tabbed .admin-config-panel {
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
 .admin-config-panel .admin-form {
@@ -472,6 +509,20 @@ select {
   .admin-layout {
     grid-template-columns: 1fr;
     grid-template-rows: minmax(0, 1fr) minmax(0, 0.9fr);
+  }
+
+  .admin-layout.admin-tabbed {
+    grid-template-columns: minmax(280px, 0.78fr) minmax(0, 1.22fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .admin-tabbed .admin-stack {
+    grid-column: 2;
+    grid-row: 2;
+  }
+
+  .admin-tabbed .admin-users-stack {
+    grid-column: 1 / -1;
   }
 
   .research-layout,
@@ -545,8 +596,13 @@ select {
   }
 
   .research-wide,
+  .research-overview-metrics,
   .research-import-panel {
     grid-column: 1 / -1;
+  }
+
+  .research-compact {
+    grid-column: span 3;
   }
 }
 
@@ -620,6 +676,80 @@ select {
   .mastery-layout,
   .admin-layout {
     grid-template-rows: minmax(0, 1fr) minmax(0, 0.92fr);
+  }
+
+  .admin-layout.admin-tabbed {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 0.58fr) minmax(0, 0.42fr);
+  }
+
+  .admin-command-panel {
+    grid-column: 1;
+    grid-row: 1;
+    padding: 8px;
+  }
+
+  .admin-command-panel .section-heading,
+  .admin-command-panel .admin-status-strip,
+  .admin-command-panel .admin-mode-panel {
+    display: none;
+  }
+
+  .admin-tabbed .admin-config-panel {
+    grid-column: 1;
+    grid-row: 2;
+    border-right: 0;
+    border-bottom: 1.5px solid var(--line);
+  }
+
+  .admin-tabbed .admin-stack {
+    grid-column: 1;
+    grid-row: 3;
+  }
+
+  .admin-tabbed .admin-users-stack {
+    grid-column: 1;
+    grid-row: 2 / -1;
+  }
+
+  .admin-users-panel {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto minmax(0, 1fr);
+  }
+
+  .admin-users-panel .admin-user-create-form {
+    grid-column: 1;
+    grid-row: 2;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .admin-users-panel .admin-user-create-form .primary-button {
+    grid-column: 1 / -1;
+  }
+
+  .admin-users-panel .admin-list-pager {
+    grid-column: 1;
+    grid-row: 3;
+  }
+
+  .admin-users-panel .user-row {
+    gap: 6px;
+    padding: 7px;
+  }
+
+  .admin-users-panel .user-role-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .admin-users-panel .user-token-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px;
+    margin-top: 5px;
+  }
+
+  .admin-users-panel .user-token-metrics span {
+    padding: 4px;
   }
 
   .canvas-layout .hero-copy h2,
@@ -751,7 +881,7 @@ select {
   }
 
   .research-layout.research-tabbed {
-    grid-template-rows: 96px minmax(0, 1fr);
+    grid-template-rows: 132px minmax(0, 1fr);
     grid-auto-rows: 0;
     gap: 6px;
   }

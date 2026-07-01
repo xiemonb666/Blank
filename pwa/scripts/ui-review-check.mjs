@@ -306,16 +306,50 @@ const checks = [
     url: `${baseUrl}/?ui-review=admin`,
     expression: `JSON.stringify({
       admin: Boolean(document.querySelector('.admin-layout')),
+      tabs: document.querySelectorAll('.admin-tabs button').length,
+      activeTab: document.querySelector('.admin-tabs .active')?.textContent?.trim() ?? '',
       statusStrip: document.querySelector('.admin-status-strip')?.textContent?.includes('未执行连通性测试时不显示模型健康结论') ?? false,
+      modelForm: document.querySelector('.admin-config-panel')?.textContent?.includes('模型接口') ?? false,
       configCount: document.querySelector('.admin-list-panel')?.textContent?.includes('API 配置') ?? false,
-      userCount: document.querySelector('.admin-list-panel + .admin-list-panel')?.textContent?.includes('用户与权限') ?? false,
       activeProvider: document.body.textContent.includes('gpt-4.1-mini'),
-      tokenUsage: document.body.textContent.includes('今日 Token') && document.body.textContent.includes('总 token') && document.body.textContent.includes('今日 token'),
+      tokenSummary: document.body.textContent.includes('今日 Token') && document.body.textContent.includes('累计模型消耗'),
       overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth,
       overflowY: document.documentElement.scrollHeight > document.documentElement.clientHeight
     })`,
-    assert: (value) => value.admin && value.statusStrip && value.configCount && value.userCount && value.activeProvider && value.tokenUsage && !value.overflowX && !value.overflowY,
+    assert: (value) => value.admin && value.tabs === 3 && value.activeTab === "模型" && value.statusStrip && value.modelForm && value.configCount && value.activeProvider && value.tokenSummary && !value.overflowX && !value.overflowY,
     keyboardTargets: [".admin-form select", ".admin-form input", ".admin-form .primary-button"],
+  },
+  {
+    name: "admin-speech",
+    url: `${baseUrl}/?ui-review=admin&ui-review-admin=speech`,
+    expression: `JSON.stringify({
+      admin: Boolean(document.querySelector('.admin-layout')),
+      activeTab: document.querySelector('.admin-tabs .active')?.textContent?.trim() ?? '',
+      speechForm: document.querySelector('.admin-config-panel')?.textContent?.includes('语音接口') ?? false,
+      speechList: document.querySelector('.admin-list-panel')?.textContent?.includes('语音配置') ?? false,
+      asrProvider: document.body.textContent.includes('sensevoice-openai'),
+      ttsProvider: document.body.textContent.includes('supertonic-http'),
+      overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+      overflowY: document.documentElement.scrollHeight > document.documentElement.clientHeight
+    })`,
+    assert: (value) => value.admin && value.activeTab === "语音" && value.speechForm && value.speechList && value.asrProvider && value.ttsProvider && !value.overflowX && !value.overflowY,
+    keyboardTargets: [".admin-form select", ".admin-form input", ".admin-form .primary-button"],
+  },
+  {
+    name: "admin-users",
+    url: `${baseUrl}/?ui-review=admin&ui-review-admin=users`,
+    expression: `JSON.stringify({
+      admin: Boolean(document.querySelector('.admin-layout')),
+      activeTab: document.querySelector('.admin-tabs .active')?.textContent?.trim() ?? '',
+      userPanel: document.querySelector('.admin-users-panel')?.textContent?.includes('用户与权限') ?? false,
+      createForm: Boolean(document.querySelector('.admin-user-create-form')),
+      tokenUsage: document.body.textContent.includes('总 token') && document.body.textContent.includes('今日 token'),
+      roleSelect: Boolean(document.querySelector('.compact-role-select')),
+      overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+      overflowY: document.documentElement.scrollHeight > document.documentElement.clientHeight
+    })`,
+    assert: (value) => value.admin && value.activeTab === "用户" && value.userPanel && value.createForm && value.tokenUsage && value.roleSelect && !value.overflowX && !value.overflowY,
+    keyboardTargets: [".admin-user-create-form input", ".admin-user-create-form select", ".compact-role-select"],
   },
   {
     name: "research",
@@ -327,16 +361,29 @@ const checks = [
       tabs: document.querySelectorAll('.research-tabs button').length,
       weakPoints: document.querySelector('.research-rank-list')?.textContent?.includes('transfer') ?? false,
       distribution: document.querySelectorAll('.distribution-row').length === 4,
-      materialQuality: document.querySelector('.material-quality-pager')?.textContent?.includes('条件概率讲义') ?? false,
-      memories: document.querySelector('.memory-category-list')?.textContent?.includes('认知卡点') ?? false,
       exportButton: document.querySelector('.research-actions')?.textContent?.includes('匿名导出') ?? false,
       blindExport: document.querySelector('.research-actions')?.textContent?.includes('盲评答卷') ?? false,
       viewportWidth: window.innerWidth,
       overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth,
       overflowY: document.documentElement.scrollHeight > document.documentElement.clientHeight
     })`,
-    assert: (value) => value.research && value.heading && value.tabs === 4 && value.metrics >= (value.viewportWidth <= 720 ? 1 : 4) && value.weakPoints && value.distribution && value.materialQuality && value.memories && value.exportButton && value.blindExport && !value.overflowX && !value.overflowY,
+    assert: (value) => value.research && value.heading && value.tabs === 5 && value.metrics >= (value.viewportWidth <= 720 ? 1 : 4) && value.weakPoints && value.distribution && value.exportButton && value.blindExport && !value.overflowX && !value.overflowY,
     keyboardTargets: [".rail-button.active", ".research-tabs .active", ".research-tabs button:nth-child(4)", ".icon-button"],
+  },
+  {
+    name: "research-diagnosis",
+    url: `${baseUrl}/?ui-review=research&ui-review-research=diagnosis`,
+    expression: `JSON.stringify({
+      research: Boolean(document.querySelector('.research-layout')),
+      activeTab: document.querySelector('.research-tabs .active')?.textContent?.trim() ?? '',
+      materialQuality: document.querySelector('.material-quality-pager')?.textContent?.includes('条件概率讲义') ?? false,
+      misconceptions: document.querySelector('.research-rank-list')?.textContent?.includes('条件方向倒置') ?? false,
+      memories: document.querySelector('.memory-category-list')?.textContent?.includes('认知卡点') ?? false,
+      overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+      overflowY: document.documentElement.scrollHeight > document.documentElement.clientHeight
+    })`,
+    assert: (value) => value.research && value.activeTab === "诊断" && value.materialQuality && value.misconceptions && value.memories && !value.overflowX && !value.overflowY,
+    keyboardTargets: [".rail-button.active", ".research-tabs .active", ".research-tabs button:nth-child(3)"],
   },
 ];
 

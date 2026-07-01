@@ -13,10 +13,11 @@ import type {
 
 gsap.registerPlugin(useGSAP);
 
-type ResearchTab = "overview" | "evidence" | "experiment" | "import";
+type ResearchTab = "overview" | "diagnosis" | "evidence" | "experiment" | "import";
 
 const researchTabs: Record<ResearchTab, { label: string; caption: string }> = {
   overview: { label: "总览", caption: "班级指标、薄弱点和材料质量。" },
+  diagnosis: { label: "诊断", caption: "材料质量、误区标签和长期记忆类别。" },
   evidence: { label: "证据", caption: "RAG 证据、出处和依赖图谱。" },
   experiment: { label: "实验", caption: "前后测、盲评一致性和样本记录。" },
   import: { label: "导入", caption: "匿名研究记录导入与导出。" },
@@ -49,7 +50,7 @@ export function ResearchStage({
   const experimentRecords = dashboard?.experiment_records ?? [];
   const agreement = dashboard?.score_agreement;
   const workbench = useMemo(() => buildResearchWorkbench(dashboard), [dashboard]);
-  const [activeTab, setActiveTab] = useState<ResearchTab>("overview");
+  const [activeTab, setActiveTab] = useState<ResearchTab>(() => resolveInitialResearchTab());
 
   return (
     <div className="research-layout research-tabbed">
@@ -96,7 +97,7 @@ export function ResearchStage({
 
       {activeTab === "overview" && (
         <>
-          <section className="research-panel research-wide">
+          <section className="research-panel research-overview-metrics">
             <div className="box-title">
               <BarChart3 size={18} />
               <span>核心指标</span>
@@ -112,7 +113,7 @@ export function ResearchStage({
             />
           </section>
 
-          <section className="research-panel">
+          <section className="research-panel research-compact">
             <div className="box-title">
               <BrainCircuit size={18} />
               <span>班级薄弱点</span>
@@ -120,7 +121,7 @@ export function ResearchStage({
             <RankList items={dashboard?.weak_points ?? []} emptyText="暂无低于 70 分的维度记录。" valueLabel="均分" />
           </section>
 
-          <section className="research-panel">
+          <section className="research-panel research-compact">
             <div className="box-title">
               <BarChart3 size={18} />
               <span>费曼评分分布</span>
@@ -141,7 +142,11 @@ export function ResearchStage({
               {!hasEvidence && <p className="admin-empty">暂无费曼评分。</p>}
             </div>
           </section>
+        </>
+      )}
 
+      {activeTab === "diagnosis" && (
+        <>
           <section className="research-panel research-wide">
             <div className="box-title">
               <FileText size={18} />
@@ -535,4 +540,10 @@ function average(values: number[]) {
   const validValues = values.filter((value) => Number.isFinite(value));
   if (validValues.length === 0) return 0;
   return validValues.reduce((sum, value) => sum + value, 0) / validValues.length;
+}
+
+function resolveInitialResearchTab(): ResearchTab {
+  if (!import.meta.env.DEV || typeof window === "undefined") return "overview";
+  const tab = new URLSearchParams(window.location.search).get("ui-review-research");
+  return tab === "diagnosis" || tab === "evidence" || tab === "experiment" || tab === "import" ? tab : "overview";
 }
