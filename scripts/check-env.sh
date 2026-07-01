@@ -6,6 +6,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BACKEND_DIR="${ROOT_DIR}/backend"
 PWA_DIR="${ROOT_DIR}/pwa"
+MINIFORGE_DIR="${ROOT_DIR}/.tools/miniforge3"
+ENV_NAME="blank-learning"
 
 # 退出码：只要核心环境（Python/Node/依赖）就绪就返回 0；数据库类问题不影响
 CORE_OK=1
@@ -17,6 +19,36 @@ print_row() {
 print_header() {
   printf '\n[blank] %s\n' "$1"
   printf '  %-22s %-10s %s\n' "项目" "状态" "说明"
+}
+
+conda_executable() {
+  if [[ -x "${MINIFORGE_DIR}/bin/conda" ]]; then
+    printf '%s' "${MINIFORGE_DIR}/bin/conda"
+    return 0
+  fi
+  if command -v conda >/dev/null 2>&1; then
+    command -v conda
+    return 0
+  fi
+  return 1
+}
+
+conda_env_exists() {
+  local conda
+  conda="$(conda_executable)" || return 1
+  "${conda}" env list 2>/dev/null | awk '{print $1}' | grep -qx "${ENV_NAME}"
+}
+
+conda_env_prefix() {
+  local conda
+  conda="$(conda_executable)" || return 1
+  "${conda}" env list 2>/dev/null | awk -v name="${ENV_NAME}" '$1 == name {print $NF; exit}'
+}
+
+conda_run_cmd() {
+  local conda
+  conda="$(conda_executable)" || return 1
+  printf '%s\n' "${conda}" "run" "--no-capture-output" "-n" "${ENV_NAME}" "$@"
 }
 
 check_python() {
@@ -50,13 +82,20 @@ check_python() {
 }
 
 check_node() {
-  if ! command -v node >/dev/null 2>&1; then
+  local node_cmd=()
+  if command -v node >/dev/null 2>&1; then
+    node_cmd=(node)
+  elif conda_env_exists; then
+    mapfile -t node_cmd < <(conda_run_cmd node)
+  fi
+
+  if [[ "${#node_cmd[@]}" -eq 0 ]]; then
     print_row "Node.js" "缺失" "未找到 node"
     CORE_OK=0
     return
   fi
   local ver
-  ver="$(node --version 2>/dev/null | sed 's/^v//')"
+  ver="$("${node_cmd[@]}" --version 2>/dev/null | sed 's/^v//')"
   local major
   major="${ver%%.*}"
   if [[ -n "${major}" && "${major}" -ge 22 ]]; then
@@ -68,10 +107,7 @@ check_node() {
 }
 
 check_conda_env() {
-  if ! command -v conda >/dev/null 2>&1; then
-    return 1
-  fi
-  conda env list 2>/dev/null | awk '{print $1}' | grep -qx "blank-learning"
+  conda_env_exists
 }
 
 check_python_env() {
@@ -88,19 +124,19 @@ check_python_env() {
 }
 
 check_backend_imports() {
-  local py=""
+  local py=()
   for candidate in python python3; do
     if command -v "${candidate}" >/dev/null 2>&1 && "${candidate}" -c 'import sys' 2>/dev/null; then
-      py="${candidate}"
+      py=("${candidate}")
       break
     fi
   done
   if [[ -x "${BACKEND_DIR}/.venv/bin/python" ]]; then
-    py="${BACKEND_DIR}/.venv/bin/python"
-  elif command -v conda >/dev/null 2>&1 && conda env list 2>/dev/null | awk '{print $1}' | grep -qx "blank-learning"; then
-    py=(conda run -n blank-learning python)
+    py=("${BACKEND_DIR}/.venv/bin/python")
+  elif conda_env_exists; then
+    mapfile -t py < <(conda_run_cmd python)
   fi
-  if [[ -z "${py}" ]]; then
+  if [[ "${#py[@]}" -eq 0 ]]; then
     print_row "Backend 依赖" "缺失" "未找到可用的 Python"
     CORE_OK=0
     return

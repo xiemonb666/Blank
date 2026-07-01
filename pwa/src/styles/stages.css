@@ -922,8 +922,8 @@
 .research-command-panel {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 116px;
-  grid-template-rows: auto minmax(0, 1fr);
-  align-content: stretch;
+  grid-template-rows: auto auto;
+  align-content: start;
 }
 
 .research-command-panel .research-heading-row {
@@ -1285,6 +1285,12 @@
   visibility: hidden;
 }
 
+.research-accordion.is-open .research-accordion-panel {
+  height: auto;
+  overflow: visible;
+  visibility: visible;
+}
+
 .research-accordion-inner {
   border-top: 1.5px solid var(--line);
   padding: 10px;
@@ -1427,7 +1433,7 @@
 
 .agreement-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
   align-content: start;
   gap: 8px;
   min-height: 0;

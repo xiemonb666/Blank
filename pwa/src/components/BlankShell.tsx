@@ -51,7 +51,7 @@ function BlankShell({
 }) {
   const [leftSize, setLeftSize] = useState(25);
   const [rightSize, setRightSize] = useState(24);
-  const [isLeftCollapsed, setIsLeftCollapsed] = useState(false);
+  const [isLeftCollapsed, setIsLeftCollapsed] = useState(true);
   const [isRightExpanded, setIsRightExpanded] = useState(false);
   const [isZenMode, setIsZenMode] = useState(false);
   const [dragging, setDragging] = useState<"left" | "right" | null>(null);
@@ -59,20 +59,25 @@ function BlankShell({
   const showLeftPanel = canUseIdeLayout && Boolean(leftPanel);
   const resolvedRightPanel = rightPanel ?? sidePanel;
   const showRightPanel = canUseIdeLayout && Boolean(resolvedRightPanel);
+  const renderLeftPanel = showLeftPanel && !isZenMode;
+  const renderRightPanel = showRightPanel && !isZenMode;
   const semanticZoomClass = leftSize <= 20 || isLeftCollapsed ? "semantic-zoom-compact" : "semantic-zoom-full";
 
   const gridTemplateColumns = useMemo(() => {
     if (!canUseIdeLayout) return undefined;
     const columns = ["76px"];
-    if (!isZenMode && showLeftPanel && !isLeftCollapsed) {
-      columns.push(`clamp(220px, ${leftSize}vw, 440px)`, "6px");
+    if (renderLeftPanel) {
+      columns.push(isLeftCollapsed ? "46px" : `clamp(220px, ${leftSize}vw, 440px)`);
+      if (!isLeftCollapsed) {
+        columns.push("6px");
+      }
     }
     columns.push("minmax(0, 1fr)");
-    if (!isZenMode && showRightPanel) {
+    if (renderRightPanel) {
       columns.push("6px", isRightExpanded ? `clamp(260px, ${rightSize}vw, 430px)` : "46px");
     }
     return columns.join(" ");
-  }, [canUseIdeLayout, isLeftCollapsed, isRightExpanded, isZenMode, leftSize, rightSize, showLeftPanel, showRightPanel]);
+  }, [canUseIdeLayout, isLeftCollapsed, isRightExpanded, leftSize, renderLeftPanel, renderRightPanel, rightSize]);
 
   function beginResize(panel: "left" | "right", event: PointerEvent<HTMLButtonElement>) {
     if (isZenMode) return;
@@ -145,7 +150,7 @@ function BlankShell({
           ))}
         </aside>
 
-        {showLeftPanel && (
+        {renderLeftPanel && (
           <aside className={`ide-panel left-ide-panel ${isLeftCollapsed ? "collapsed" : ""} ${semanticZoomClass}`} aria-label="知识拓扑与目录">
             <div className="ide-panel-toolbar">
               <span>Knowledge</span>
@@ -163,7 +168,7 @@ function BlankShell({
           </aside>
         )}
 
-        {showLeftPanel && !isZenMode && !isLeftCollapsed && <button className="ide-splitter left-splitter" type="button" aria-label="调整左侧栏宽度" onPointerDown={(event) => beginResize("left", event)} onPointerMove={updateResize} onPointerUp={endResize} onPointerCancel={endResize} />}
+        {renderLeftPanel && !isLeftCollapsed && <button className="ide-splitter left-splitter" type="button" aria-label="调整左侧栏宽度" onPointerDown={(event) => beginResize("left", event)} onPointerMove={updateResize} onPointerUp={endResize} onPointerCancel={endResize} />}
 
         <section className={`main-stage ${isAdminStage ? "admin-stage-shell" : ""}`}>
           {error && <div className="error-banner">{error}</div>}
@@ -172,9 +177,9 @@ function BlankShell({
           </StageTransition>
         </section>
 
-        {showRightPanel && !isZenMode && <button className="ide-splitter right-splitter" type="button" aria-label="调整右侧栏宽度" onPointerDown={(event) => beginResize("right", event)} onPointerMove={updateResize} onPointerUp={endResize} onPointerCancel={endResize} />}
+        {renderRightPanel && <button className="ide-splitter right-splitter" type="button" aria-label="调整右侧栏宽度" onPointerDown={(event) => beginResize("right", event)} onPointerMove={updateResize} onPointerUp={endResize} onPointerCancel={endResize} />}
 
-        {showRightPanel && (
+        {renderRightPanel && (
           <aside className={`ide-panel right-ide-panel ${isRightExpanded ? "expanded" : "tabbed"}`} aria-label="辅助研究与诊断面板">
             <div className="right-panel-tabs" aria-label="辅助面板标签">
               <button

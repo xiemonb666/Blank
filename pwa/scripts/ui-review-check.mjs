@@ -400,6 +400,74 @@ const checks = [
     assert: (value) => value.research && value.activeTab === "诊断" && value.materialQuality && value.misconceptions && value.memories && !value.overflowX && !value.overflowY,
     keyboardTargets: [".rail-button.active", ".research-tabs .active", ".research-tabs button:nth-child(3)"],
   },
+  {
+    name: "research-evidence",
+    url: `${baseUrl}/?ui-review=research&ui-review-research=evidence`,
+    expression: `(async () => {
+      const visible = (element) => {
+        if (!element) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return !element.hidden && style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 16;
+      };
+      const triggers = [...document.querySelectorAll('.research-accordion-trigger')];
+      triggers.forEach((trigger) => trigger.click());
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      const panels = [...document.querySelectorAll('.research-accordion.is-open .research-accordion-panel')];
+      const panelVisibility = panels.map((panel) => visible(panel));
+      const sourceRows = document.querySelectorAll('.source-trace-row').length;
+      const dependencyCells = document.querySelectorAll('.dependency-trace-cell').length;
+      return JSON.stringify({
+        research: Boolean(document.querySelector('.research-layout')),
+        activeTab: document.querySelector('.research-tabs .active')?.textContent?.trim() ?? '',
+        workbench: document.querySelector('.research-explain-panel')?.textContent?.includes('证据可解释性工作台') ?? false,
+        ragRows: document.querySelectorAll('.rag-annotation-row').length,
+        accordions: triggers.length,
+        openAccordions: document.querySelectorAll('.research-accordion.is-open').length,
+        panelVisibility,
+        sourceRows,
+        dependencyCells,
+        sourcesExpanded: document.querySelector('.research-accordion.is-open .research-source-list')?.textContent?.includes('条件概率讲义') ?? false,
+        graphExpanded: document.querySelector('.research-accordion.is-open .dependency-trace-grid')?.textContent?.includes('依赖边') ?? false,
+        overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+        overflowY: document.documentElement.scrollHeight > document.documentElement.clientHeight
+      });
+    })()`,
+    assert: (value) => value.research && value.activeTab === "证据" && value.workbench && value.ragRows >= 1 && value.accordions === 2 && value.openAccordions === 2 && value.panelVisibility.every(Boolean) && value.sourceRows >= 1 && value.dependencyCells >= 3 && value.sourcesExpanded && value.graphExpanded && !value.overflowX && !value.overflowY,
+    keyboardTargets: [".rail-button.active", ".research-tabs .active", ".research-accordion-trigger"],
+  },
+  {
+    name: "research-experiment",
+    url: `${baseUrl}/?ui-review=research&ui-review-research=experiment`,
+    expression: `JSON.stringify({
+      research: Boolean(document.querySelector('.research-layout')),
+      activeTab: document.querySelector('.research-tabs .active')?.textContent?.trim() ?? '',
+      summaryRows: document.querySelectorAll('.experiment-summary-row').length,
+      agreementPills: document.querySelectorAll('.agreement-pill').length,
+      agreementReadable: [...document.querySelectorAll('.agreement-pill')].every((element) => {
+        const rect = element.getBoundingClientRect();
+        return rect.width > 80 && rect.height > 48 && element.textContent.trim().length > 3;
+      }),
+      recordRows: document.querySelectorAll('.experiment-record-row').length,
+      recordsReadable: [...document.querySelectorAll('.experiment-record-row')].every((element) => {
+        const rect = element.getBoundingClientRect();
+        return rect.width > 180 && rect.height > 32 && element.textContent.includes('系统');
+      }),
+      noForcedPagerWhenRoom: (() => {
+        const pagers = [...document.querySelectorAll('.experiment-summary-pager, .experiment-record-pager')];
+        return pagers.every((pager) => {
+          const body = pager.querySelector('.paged-list-body');
+          const controls = pager.querySelector('.pager-controls');
+          if (!body || !controls) return true;
+          return body.scrollHeight <= body.clientHeight + 1 || controls.textContent.includes('1 /');
+        });
+      })(),
+      overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+      overflowY: document.documentElement.scrollHeight > document.documentElement.clientHeight
+    })`,
+    assert: (value) => value.research && value.activeTab === "实验" && value.summaryRows >= 2 && value.agreementPills === 5 && value.agreementReadable && value.recordRows >= 2 && value.recordsReadable && value.noForcedPagerWhenRoom && !value.overflowX && !value.overflowY,
+    keyboardTargets: [".rail-button.active", ".research-tabs .active", ".research-tabs button:nth-child(5)"],
+  },
 ];
 
 await mkdir(outputDir, { recursive: true });
@@ -445,7 +513,11 @@ async function runCheck(check, viewport, port) {
     await devtools.call("Page.navigate", { url: check.url });
     await waitForDocumentReady(devtools);
     await waitForStageReady(devtools);
-    const evaluation = await devtools.call("Runtime.evaluate", { expression: check.expression, returnByValue: true });
+    const evaluation = await devtools.call("Runtime.evaluate", {
+      expression: check.expression,
+      returnByValue: true,
+      awaitPromise: true,
+    });
     const value = JSON.parse(evaluation.result.value);
     const accessibilityEvaluation = await devtools.call("Runtime.evaluate", {
       expression: commonAccessibilityExpression,
@@ -579,11 +651,35 @@ function assertFixedViewport(name, fixedViewport) {
   if (!fixedViewport.contentVisible) failures.push(`stage content is blank or too small: ${JSON.stringify(fixedViewport.content)}`);
   if (fixedViewport.floatingToolbarVisible) failures.push("floating stage toolbar must be removed");
   if (fixedViewport.floatingToolbarOverlap) failures.push("floating toolbar overlaps content");
-  if (fixedViewport.nativeScrollables.length > 0) failures.push(`native scrollable regions: ${fixedViewport.nativeScrollables.join(", ")}`);
+  const unexpectedScrollables = fixedViewport.nativeScrollables.filter((item) => !isAllowedInternalScrollable(item));
+  if (unexpectedScrollables.length > 0) failures.push(`unexpected native scrollable regions: ${unexpectedScrollables.join(", ")}`);
   if (fixedViewport.textLength < 40) failures.push("page text is unexpectedly sparse");
   if (failures.length > 0) {
     throw new Error(`Fixed viewport check failed for ${name}: ${failures.join("; ")}`);
   }
+}
+
+function isAllowedInternalScrollable(selector) {
+  return [
+    ".history-list",
+    ".message-list",
+    ".node-list",
+    ".sidecar-node-list",
+    ".paged-list-body",
+    ".memory-list",
+    ".admin-list",
+    ".node-evidence-scroll",
+    ".evidence-list",
+    ".research-layout",
+    ".mastery-layout",
+    ".diagnostic-board",
+    ".next-panel",
+    ".evidence-layout",
+    ".organization-member-picker",
+    ".organization-member-rank",
+    ".math-display",
+    ".math-inline",
+  ].some((allowed) => selector.includes(allowed));
 }
 
 function assertReducedMotion(name, reducedMotion) {

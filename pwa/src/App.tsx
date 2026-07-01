@@ -840,24 +840,15 @@ function App() {
     const previousPersona = persona;
     setPersona(nextPersona);
     if (UI_REVIEW_STAGE) return;
-    if (!sessionId || !activeNode) return;
+    if (!sessionId) return;
     try {
-      await runBusy(async () => {
-        const session = await updateSessionPersona(sessionId, nextPersona);
-        setPersona(session.persona);
-        setTutorSettings(session.tutor_settings ?? tutorSettings);
-        setMaterialTitle(session.material_title);
-        setNodes(session.nodes);
-        setActiveNodeId(session.active_node_id);
-        hydrateActiveNodeThread(session);
-        setMemories(session.memories);
-        setNodeProfiles(resolveNodeProfiles(session));
-        setFeynmanAssessmentsByNodeId(session.feynman_assessments ?? {});
-        parseJob.setParseProgress(session.parse_progress);
-        await refreshSessions();
-      });
-    } catch {
+      setError("");
+      const session = await updateSessionPersona(sessionId, nextPersona);
+      setPersona(session.persona);
+      setTutorSettings(session.tutor_settings ?? tutorSettings);
+    } catch (caught) {
       setPersona(previousPersona);
+      setError(caught instanceof Error ? caught.message : "切换教学风格失败，请稍后重试。");
     }
   }
 
@@ -867,20 +858,12 @@ function App() {
     if (UI_REVIEW_STAGE) return;
     if (!sessionId) return;
     try {
-      await runBusy(async () => {
-        const session = await updateSessionTutorSettings(sessionId, nextSettings);
-        setTutorSettings(session.tutor_settings ?? nextSettings);
-        setMaterialTitle(session.material_title);
-        setNodes(session.nodes);
-        setActiveNodeId(session.active_node_id);
-        hydrateActiveNodeThread(session);
-        setMemories(session.memories);
-        setNodeProfiles(resolveNodeProfiles(session));
-        setFeynmanAssessmentsByNodeId(session.feynman_assessments ?? {});
-        await refreshSessions();
-      });
-    } catch {
+      setError("");
+      const session = await updateSessionTutorSettings(sessionId, nextSettings);
+      setTutorSettings(session.tutor_settings ?? nextSettings);
+    } catch (caught) {
       setTutorSettings(previousSettings);
+      setError(caught instanceof Error ? caught.message : "保存导师参数失败，请稍后重试。");
     }
   }
 
@@ -1194,7 +1177,15 @@ function App() {
 
   async function exportResearchData() {
     const payload = await exportResearchExperiments();
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
+    const dashboard = researchDashboard ?? await getResearchDashboard();
+    setResearchDashboard(dashboard);
+    const exportPayload = {
+      generated_at: payload.generated_at,
+      record_count: payload.records.length,
+      records: payload.records,
+      dashboard,
+    };
+    const blob = new Blob([JSON.stringify(exportPayload, null, 2)], { type: "application/json;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
@@ -1498,7 +1489,8 @@ function App() {
     />
   ) : null;
 
-  const shellLeftPanel = hasSession ? (
+  const shouldShowKnowledgePanel = hasSession && (stage === "map" || stage === "flow");
+  const shellLeftPanel = shouldShowKnowledgePanel ? (
     <div className="knowledge-sidecar">
       <section className="semantic-topology" aria-label="知识拓扑侧栏预览">
         <div className="sidecar-heading">
@@ -1571,10 +1563,11 @@ function App() {
     </div>
   ) : null;
 
-  const hasAuxiliaryPanel = Boolean(shellSidePanel) || activeDimensionScores.length > 0;
+  const shouldShowAuxiliaryScores = activeDimensionScores.length > 0 && (stage === "map" || stage === "flow");
+  const hasAuxiliaryPanel = Boolean(shellSidePanel) || shouldShowAuxiliaryScores;
   const shellRightPanel = hasAuxiliaryPanel ? (
     <div className="auxiliary-sidecar">
-      {activeDimensionScores.length > 0 && (
+      {shouldShowAuxiliaryScores && (
         <section className="auxiliary-card compact-radar">
           <div className="sidecar-heading">
             <span>Feynman</span>

@@ -1,4 +1,4 @@
-import { ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useGSAP } from "@gsap/react";
 import gsap from "gsap";
@@ -162,15 +162,19 @@ export function PagedList<T>({
   ariaLabel: string;
   className?: string;
 }) {
+  const bodyRef = useRef<HTMLDivElement | null>(null);
   const [page, setPage] = useState(0);
   const [isMedium, setIsMedium] = useState(false);
   const [isCompact, setIsCompact] = useState(false);
-  const effectivePageSize = isCompact && compactPageSize ? compactPageSize : isMedium && mediumPageSize ? mediumPageSize : pageSize;
+  const viewportPageSize = isCompact && compactPageSize ? compactPageSize : isMedium && mediumPageSize ? mediumPageSize : pageSize;
+  const [measuredPageSize, setMeasuredPageSize] = useState<number | null>(null);
+  const isMeasuringFit = items.length > viewportPageSize && measuredPageSize === null;
+  const effectivePageSize = isMeasuringFit ? items.length : Math.max(1, Math.min(items.length || viewportPageSize, measuredPageSize ?? viewportPageSize));
   const pageCount = Math.max(1, Math.ceil(items.length / effectivePageSize));
   const safePage = Math.min(page, pageCount - 1);
   const visibleItems = useMemo(
-    () => items.slice(safePage * effectivePageSize, safePage * effectivePageSize + effectivePageSize),
-    [items, effectivePageSize, safePage],
+    () => (isMeasuringFit ? items : items.slice(safePage * effectivePageSize, safePage * effectivePageSize + effectivePageSize)),
+    [effectivePageSize, isMeasuringFit, items, safePage],
   );
 
   useEffect(() => {
@@ -195,13 +199,44 @@ export function PagedList<T>({
     setPage((current) => Math.min(current, pageCount - 1));
   }, [pageCount]);
 
+  useEffect(() => {
+    setMeasuredPageSize(null);
+    setPage(0);
+  }, [items.length, viewportPageSize]);
+
+  useLayoutEffect(() => {
+    if (items.length <= viewportPageSize) {
+      setMeasuredPageSize(items.length || viewportPageSize);
+      return;
+    }
+    if (measuredPageSize !== null) return;
+    const body = bodyRef.current;
+    if (!body || typeof window === "undefined") return;
+    const bodyRect = body.getBoundingClientRect();
+    const visibleBottom = bodyRect.top + body.clientHeight + 1;
+    const visibleRight = bodyRect.left + body.clientWidth + 1;
+    const children = Array.from(body.children);
+    const visibleCount = children.filter((child) => {
+      const rect = child.getBoundingClientRect();
+      return rect.height > 0 && rect.width > 0 && rect.bottom <= visibleBottom && rect.right <= visibleRight;
+    }).length;
+    setMeasuredPageSize(Math.max(1, Math.min(items.length, visibleCount || viewportPageSize)));
+  }, [items.length, measuredPageSize, viewportPageSize]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const remeasure = () => setMeasuredPageSize(null);
+    window.addEventListener("resize", remeasure);
+    return () => window.removeEventListener("resize", remeasure);
+  }, []);
+
   function move(offset: number) {
     setPage((current) => Math.min(pageCount - 1, Math.max(0, current + offset)));
   }
 
   return (
     <div className={`paged-list ${className}`} aria-label={ariaLabel}>
-      <div className="paged-list-body">
+      <div className="paged-list-body" ref={bodyRef}>
         {visibleItems.length > 0 ? visibleItems.map((item, index) => renderItem(item, safePage * effectivePageSize + index)) : empty}
       </div>
       {pageCount > 1 && (

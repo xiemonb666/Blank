@@ -1083,3 +1083,134 @@ select {
     min-block-size: 92px;
   }
 }
+
+/* 内容容器必须能在固定视口内自行滚动，不能被全局裁切吞掉。 */
+.node-list,
+.sidecar-node-list,
+.history-list,
+.memory-list,
+.admin-list,
+.message-list,
+.node-evidence-scroll,
+.evidence-list,
+.organization-member-picker,
+.organization-member-rank {
+  overflow: auto !important;
+}
+
+.math-display,
+.math-inline {
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+}
+
+.message-list {
+  align-content: start !important;
+  scroll-behavior: auto;
+}
+
+.agent-workflow-panel.collapsed {
+  min-block-size: 0 !important;
+}
+
+.mastery-layout,
+.evidence-layout,
+.research-layout {
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+}
+
+.mastery-layout {
+  grid-template-rows: auto minmax(0, 1fr) !important;
+}
+
+.diagnostic-board,
+.next-panel {
+  overflow: auto !important;
+}
+
+.evidence-layout {
+  grid-template-rows: auto auto auto auto !important;
+  grid-auto-rows: min-content !important;
+}
+
+.evidence-chain,
+.evidence-grid,
+.evidence-detail,
+.mastery-radar-panel {
+  overflow: visible !important;
+}
+
+.research-layout.research-tabbed {
+  grid-auto-rows: min-content !important;
+  align-content: start !important;
+}
+
+.research-layout.research-tabbed.research-view-overview {
+  grid-template-rows: auto auto auto !important;
+}
+
+.research-panel {
+  min-block-size: 0 !important;
+  overflow: visible !important;
+}
+
+.research-command-panel {
+  grid-template-rows: auto auto !important;
+  align-content: start !important;
+}
+
+.research-tldr {
+  align-self: start;
+}
+
+.research-layout.research-tabbed > .research-panel:not(.research-command-panel) {
+  display: flex !important;
+  grid-column: 1 / -1;
+  block-size: auto !important;
+}
+
+.research-layout.research-tabbed.research-view-overview > .research-overview-metrics,
+.research-layout.research-tabbed.research-view-overview > .research-weak-panel,
+.research-layout.research-tabbed.research-view-overview > .research-distribution-panel {
+  grid-column: span 4;
+}
+
+.node-strip-pager .paged-list-body {
+  overflow: auto !important;
+  padding: 2px 4px 4px 2px;
+}
+
+@media (max-width: 720px) {
+  .mastery-layout {
+    grid-template-columns: 1fr !important;
+    grid-template-rows: auto auto auto !important;
+  }
+
+  .mastery-summary {
+    grid-row: auto !important;
+    border-right: 0 !important;
+    border-bottom: 1.5px solid var(--line);
+    padding: 18px !important;
+  }
+
+  .diagnostic-board,
+  .next-panel {
+    min-block-size: auto !important;
+    overflow: visible !important;
+    padding: 18px !important;
+  }
+
+  .result-brief,
+  .diagnostic-row {
+    grid-template-columns: 1fr !important;
+  }
+
+  .score-ribbon {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .evidence-details {
+    align-self: start !important;
+  }
+}

@@ -74,7 +74,7 @@ export function FlowStage({
   const stageOrder = ["warmup", "mechanism", "transfer", "correction", "recap"] as const;
   const currentStageIndex = profile ? Math.max(0, stageOrder.indexOf(profile.stage)) : 0;
   const latestMessage = messages.length > 0 ? messages[messages.length - 1] : null;
-  const visibleMessages = messages.slice(-3);
+  const visibleMessages = messages;
   const latestThought = thoughts && thoughts.length > 0 ? thoughts[thoughts.length - 1] : "";
   const scrollSignal = [
     activeNode.id,
@@ -214,7 +214,7 @@ export function FlowStage({
                 const canSpeak = ttsEnabled && message.role === "mentor" && Boolean(message.text.trim());
                 return (
                   <div
-                    key={`${message.node_id ?? activeNode.id}-${message.created_at ?? index}-${message.role}-${messages.length}`}
+                    key={`${message.node_id ?? activeNode.id}-${message.created_at ?? index}-${message.role}-${index}`}
                     className={`message ${message.role}`}
                   >
                     <div className="message-kicker">
@@ -339,13 +339,14 @@ function NodeCardStack({
           <button
             type="button"
             key={node.id}
-            className={`node-strip ${node.id === activeNode.id ? "active" : ""} ${node.status}`}
+            className={`node-strip ${node.id === activeNode.id ? "active" : node.status}`}
             onClick={() => {
               if (isBusy || node.id === activeNode.id || node.status === "locked") return;
               void onSelectNode(node);
             }}
             aria-current={node.id === activeNode.id ? "true" : undefined}
             aria-disabled={isBusy || node.status === "locked"}
+            title={`${node.title}：${node.summary}`}
           >
             <span className="node-strip-level">L{node.complexity}</span>
             <span className="node-strip-copy">

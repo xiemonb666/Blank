@@ -31,7 +31,7 @@ export function AgentWorkflowPanel({ events, activeStatus, isStreaming }: AgentW
   const latestEvent = events[events.length - 1] ?? null;
   const recentEvents = events.slice(-5).reverse();
   const hasTerminalEvent = latestEvent?.type === "done" || latestEvent?.type === "error";
-  const [collapsed, setCollapsed] = useState(() => Boolean(hasTerminalEvent && !isStreaming));
+  const [collapsed, setCollapsed] = useState(true);
   const [manualOverride, setManualOverride] = useState(false);
   const statusLabel = latestEvent?.type === "error" ? "异常" : isStreaming ? "运行中" : hasTerminalEvent ? "已完成" : "待命";
   const compactAgents = useMemo(
@@ -45,7 +45,11 @@ export function AgentWorkflowPanel({ events, activeStatus, isStreaming }: AgentW
       setManualOverride(false);
       return;
     }
-    if (!hasTerminalEvent || manualOverride) return;
+    if (manualOverride) return;
+    if (!hasTerminalEvent) {
+      setCollapsed(true);
+      return;
+    }
     const timer = window.setTimeout(() => setCollapsed(true), AUTO_COLLAPSE_DELAY_MS);
     return () => window.clearTimeout(timer);
   }, [hasTerminalEvent, isStreaming, latestEvent?.id, manualOverride]);
