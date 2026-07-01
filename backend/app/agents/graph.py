@@ -3,6 +3,7 @@ from __future__ import annotations
 from langgraph.graph import END, StateGraph
 
 from .critic import critic_node
+from .dynamic import analyst_node, coach_node, memory_node, planner_node
 from .feynman import feynman_node
 from .router import router_node
 from .socrates import socrates_chat_node, socrates_node
@@ -18,6 +19,34 @@ def _route_by_intent(state: AgentState) -> str:
     if intent == "chat":
         return "socrates_chat"
     return "socrates"
+
+
+def _wants_dynamic_agent(state: AgentState, agent: str) -> bool:
+    return agent in set(state.get("dynamic_agents") or [])
+
+
+def _route_after_router(state: AgentState) -> str:
+    if _wants_dynamic_agent(state, "planner"):
+        return "planner"
+    return _route_after_planner(state)
+
+
+def _route_after_planner(state: AgentState) -> str:
+    if _wants_dynamic_agent(state, "analyst"):
+        return "analyst"
+    return _route_after_analyst(state)
+
+
+def _route_after_analyst(state: AgentState) -> str:
+    if _wants_dynamic_agent(state, "coach"):
+        return "coach"
+    return _route_after_coach(state)
+
+
+def _route_after_coach(state: AgentState) -> str:
+    if _wants_dynamic_agent(state, "memory"):
+        return "memory"
+    return _route_by_intent(state)
 
 
 def _route_by_critic(state: AgentState) -> str:
@@ -86,6 +115,10 @@ def build_agent_graph() -> StateGraph:
 
     # 注册节点
     builder.add_node("router", router_node)
+    builder.add_node("planner", planner_node)
+    builder.add_node("analyst", analyst_node)
+    builder.add_node("coach", coach_node)
+    builder.add_node("memory", memory_node)
     builder.add_node("socrates", socrates_node)
     builder.add_node("socrates_chat", socrates_chat_node)
     builder.add_node("feynman", feynman_node)
@@ -96,16 +129,26 @@ def build_agent_graph() -> StateGraph:
     # 入口
     builder.set_entry_point("router")
 
-    # Router 后的条件分支
+    dynamic_or_intent_edges = {
+        "planner": "planner",
+        "analyst": "analyst",
+        "coach": "coach",
+        "memory": "memory",
+        "socrates": "socrates",
+        "socrates_chat": "socrates_chat",
+        "feynman": "feynman",
+    }
+
+    # Router 后先执行可选动态角色，再进入固定意图分支
     builder.add_conditional_edges(
         "router",
-        _route_by_intent,
-        {
-            "socrates": "socrates",
-            "socrates_chat": "socrates_chat",
-            "feynman": "feynman",
-        },
+        _route_after_router,
+        dynamic_or_intent_edges,
     )
+    builder.add_conditional_edges("planner", _route_after_planner, dynamic_or_intent_edges)
+    builder.add_conditional_edges("analyst", _route_after_analyst, dynamic_or_intent_edges)
+    builder.add_conditional_edges("coach", _route_after_coach, dynamic_or_intent_edges)
+    builder.add_conditional_edges("memory", _route_by_intent, dynamic_or_intent_edges)
 
     # Socrates / Feynman 后根据上下文质量决定是否进入 Critic
     builder.add_conditional_edges(

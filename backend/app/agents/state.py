@@ -27,6 +27,8 @@ class AgentState(TypedDict):
     # ========== Router 输出 ==========
     intent: str  # "question" | "explanation" | "chat"
     intent_reason: str
+    dynamic_agents: list[str]  # 动态增派角色，如 planner/analyst/coach/memory
+    dynamic_guidance: str
 
     # ========== Socrates 输出 ==========
     mentor_reply: str

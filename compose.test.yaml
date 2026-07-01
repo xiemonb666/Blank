@@ -5,7 +5,7 @@ name: blank-learning-test
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     container_name: blank-test-postgres
     environment:
       POSTGRES_USER: blank
@@ -81,6 +81,10 @@ services:
       # 测试 fixture 中会强制关闭 GraphRAG 与使用内存限流，
       # 但这里仍给出完整环境变量以便单独调试。
       BLANK_GRAPHRAG_ENABLED: "false"
+      BLANK_RAG_BACKEND: sag
+      BLANK_DB_POOL_MIN_CONN: "1"
+      BLANK_DB_POOL_MAX_CONN: "20"
+      BLANK_OCR_ENABLED: "false"
       BLANK_ALLOW_IN_MEMORY_RATE_LIMIT: "true"
       BLANK_ALLOW_PRIVATE_MODEL_URLS: "true"
     volumes:

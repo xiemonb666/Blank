@@ -6,7 +6,7 @@ name: blank-learning-test-minimal
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     container_name: blank-test-postgres
     environment:
       POSTGRES_USER: blank
@@ -54,6 +54,10 @@ services:
       BLANK_REDIS_URL: redis://redis:6379/0
       BLANK_TEST_REDIS_URL: redis://redis:6379/15
       BLANK_GRAPHRAG_ENABLED: "false"
+      BLANK_RAG_BACKEND: sag
+      BLANK_DB_POOL_MIN_CONN: "1"
+      BLANK_DB_POOL_MAX_CONN: "20"
+      BLANK_OCR_ENABLED: "false"
       BLANK_ALLOW_IN_MEMORY_RATE_LIMIT: "true"
       BLANK_ALLOW_PRIVATE_MODEL_URLS: "true"
     volumes:

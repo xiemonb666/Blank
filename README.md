@@ -18,17 +18,17 @@ Blank 是一个教育学习闭环 MVP，核心流程为：**输入 -> 拆解 -> 
 
 ## 功能概览
 
-- 材料输入：上传 PDF、TXT、Markdown、CSV、JSON，创建学习会话；扫描版 PDF 会提示先 OCR。
+- 材料输入：上传 PDF、TXT、Markdown、CSV、JSON 和图片材料；图片可通过 Unlimited-OCR HTTP 服务提取文字，扫描版 PDF 仍会提示先 OCR。
 - 解析任务：材料提交后进入持久化解析任务，刷新页面可继续查看解析进度。
 - 知识拓扑：生成知识节点、复杂度、依赖关系和解锁状态。
-- 苏格拉底学习：支持 Persona 调节、流式对话、困惑状态记录和自适应降维。
+- 苏格拉底学习：支持 Persona 调节、流式对话、困惑状态记录、自适应降维和动态多 Agent 增派。
 - 思考摘要：导师消息上方显示可展开的推理要点摘要。
 - 语音闭环：后台可配置 SenseVoice 兼容 ASR 与 Supertonic 兼容 TTS；费曼讲解可录音转写，导师消息和费曼题目可朗读。
 - 费曼验证：提交解释后返回概念覆盖、逻辑连贯、表达负荷等诊断。
 - 记忆系统：PostgreSQL 按用户持久化会话、消息与认知记录。
 - 账号系统：注册、登录、HttpOnly Cookie 会话、双提交 CSRF、系统管理员/组织管理者/组织成员/个人学习者四类角色。
 - 后台管理：配置 OpenAI / vLLM / Ollama / Custom 的 Base URL、API Key 和模型，创建账号并分配组织权限。
-- 组织闭环：组织管理者可管理成员、查看组织研究面板、批量下发学习任务、维护组织专属知识库。
+- 组织闭环：组织管理者可管理成员、查看组织研究面板、批量下发学习任务、维护组织专属知识库，并导出本组织成员的对话、费曼验证和节点轨迹用于溯源分析。
 - 教师/研究端：聚合薄弱点、费曼评分分布、材料节点质量、常见误区、长期记忆类别和 token 成本指标。
 
 ## 账号与组织权限
@@ -57,17 +57,19 @@ Blank 是一个教育学习闭环 MVP，核心流程为：**输入 -> 拆解 -> 
 
 - 成员：查看每个成员的材料数、掌握节点、平均费曼得分和详细能力维度。
 - 任务：向全部组织成员或指定成员批量下发学习任务，成员启动后生成独立学习会话。
-- 知识库：上传组织内部资料，聊天和拆解检索会追加同组织知识库内容；删除时同步清理组织知识库记录。
+- 知识库：上传组织内部资料，聊天检索会追加同组织知识库内容；删除时同步清理组织知识库记录和 SAG 索引。
 - 组织研究：查看本组织范围内的研究指标、费曼分布、材料质量和成员明细。
+- 导出溯源：下载本组织成员的会话、对话消息、费曼问题/答案/追问/评分、节点状态和节点画像 JSON。
 
 ## 架构状态
 
 - 前端：React 19 + TypeScript + Vite，黑白线条风 UI。
-- 后端：Python 3.13 + FastAPI + PostgreSQL + Redis + Neo4j/GraphRAG。
+- 后端：Python 3.13 + FastAPI + PostgreSQL/SAG + Redis + 可选 Neo4j/GraphRAG。
 - V2 主路线：前端默认使用 `/api/v2/chat/stream` 多智能体流式对话。
 - V1 回退：旧 `/api/sessions/{id}/chat` 单链路导师仍保留用于故障回退。
-- GraphRAG：默认启用 Neo4j 图谱与向量检索，失败时回退材料片段。
-- 主存储：PostgreSQL 是默认主存储，Redis 是默认限流后端，Neo4j 是默认 GraphRAG 底座。
+- 多 Agent：固定角色为 Router、RAG、Socrates、Feynman、Critic、Graph；Router 会按消息复杂度和学习状态动态增派 Planner、Analyst、Coach、Memory。
+- RAG：默认 `BLANK_RAG_BACKEND=sag`，使用 PostgreSQL 保存语义分段、实体、事件和多级召回结果；`legacy_neo4j` 可切回旧 Neo4j GraphRAG。
+- 主存储：PostgreSQL 是默认主存储和 SAG 数据底座，Redis 是默认限流后端，Neo4j 仅在旧 GraphRAG 模式下使用。
 - 语音服务：ASR/TTS 支持后台数据库配置，未配置时回退 `BLANK_ASR_*` / `BLANK_TTS_*` 环境变量。
 
 ## 快速启动
@@ -129,7 +131,7 @@ Linux / macOS / WSL 的 `scripts/start-in-docker.sh` 会自动检测应用镜像
 | 前后端合并 | `blank-learning/all-in-one:local` | 本地演示、单入口部署、同源访问 `/api` |
 | 前后端分离 | `blank-learning/backend:local` + `blank-learning/frontend:local` | 前端和后端独立部署、后端 API 单独暴露 |
 
-两种 compose 都会同时编排 PostgreSQL、Redis 和 Neo4j。这里的“合并镜像”指前端和后端合并为一个应用镜像，数据库和中间件仍作为基础设施容器运行。
+两种 compose 都会同时编排 PostgreSQL(pgvector 镜像)、Redis 和 Neo4j。这里的“合并镜像”指前端和后端合并为一个应用镜像，数据库和中间件仍作为基础设施容器运行。默认 RAG 后端为 PostgreSQL/SAG；Neo4j 保留给 `BLANK_RAG_BACKEND=legacy_neo4j`。
 
 ### 合并模式
 
@@ -367,7 +369,7 @@ npm run build
 ```bash
 source backend/.venv/bin/activate
 pip install -r backend/requirements-dev.txt
-python -m pytest backend/test_api.py backend/test_v2_api.py
+python -m pytest backend/test_api.py backend/test_v2_api.py backend/test_sag_rag.py backend/test_ocr_materials.py backend/test_concurrency.py
 ```
 
 Windows PowerShell：
@@ -375,7 +377,7 @@ Windows PowerShell：
 ```powershell
 .\backend\.venv\Scripts\Activate.ps1
 pip install -r backend\requirements-dev.txt
-python -m pytest backend\test_api.py backend\test_v2_api.py
+python -m pytest backend\test_api.py backend\test_v2_api.py backend\test_sag_rag.py backend\test_ocr_materials.py backend\test_concurrency.py
 ```
 
 Docker 后端测试：
@@ -443,6 +445,7 @@ docker compose -f compose.test.yaml down -v
 - `GET /api/organizations/current/members`：组织成员列表和概要统计。
 - `GET /api/organizations/current/members/{user_id}/report`：组织成员学习报告和费曼维度数据。
 - `GET /api/organizations/current/dashboard`：组织范围研究面板。
+- `GET /api/organizations/current/export`：组织成员完整学习溯源导出，包含对话、费曼问题/答案/追问/评分和节点轨迹。
 - `POST /api/organizations/current/tasks`：组织管理者创建学习任务，可下发给全部成员或指定成员。
 - `GET /api/me/tasks` / `POST /api/me/tasks/{task_id}/start`：组织成员查看并启动任务。
 - `GET /api/organizations/current/knowledge`：组织知识库列表。
@@ -462,7 +465,15 @@ docker compose -f compose.test.yaml down -v
 | `BLANK_ALLOWED_HOSTS` | 允许的 Host 头，逗号分隔 | `localhost,127.0.0.1` |
 | `BLANK_CORS_ORIGINS` | 允许的前端来源，逗号分隔 | 多个 localhost 端口 |
 | `BLANK_DATABASE_URL` | PostgreSQL 连接字符串 | `postgresql://blank:blank@127.0.0.1:5432/blank` |
+| `BLANK_DB_POOL_MIN_CONN` | PostgreSQL 连接池最小连接数 | `1` |
+| `BLANK_DB_POOL_MAX_CONN` | PostgreSQL 连接池最大连接数 | `20` |
 | `BLANK_REDIS_URL` | Redis 限流连接字符串 | `redis://127.0.0.1:6379/0` |
+| `BLANK_RAG_BACKEND` | RAG 后端：`sag` 或 `legacy_neo4j` | `sag` |
+| `BLANK_OCR_ENABLED` | 是否启用图片 OCR 解析 | `false` |
+| `BLANK_UNLIMITED_OCR_BASE_URL` | Unlimited-OCR HTTP 服务 Base URL | 空 |
+| `BLANK_UNLIMITED_OCR_PATH` | Unlimited-OCR 接口路径 | `/ocr` |
+| `BLANK_UNLIMITED_OCR_REQUEST_MODE` | OCR 请求模式：`multipart` 或 `json` | `multipart` |
+| `BLANK_OCR_TIMEOUT_SECONDS` | OCR 请求超时秒数 | `60` |
 | `BLANK_ASR_BASE_URL` | ASR 环境变量回退 Base URL；后台语音配置优先 | 空 |
 | `BLANK_ASR_PROVIDER` | ASR Provider 标识 | `sensevoice-openai` |
 | `BLANK_ASR_TRANSCRIBE_PATH` | ASR 转写接口路径 | `/v1/audio/transcriptions` |
@@ -477,10 +488,10 @@ docker compose -f compose.test.yaml down -v
 | `BLANK_TTS_LANGUAGE` | 默认 TTS 语言 | `zh` |
 | `BLANK_TTS_RESPONSE_FORMAT` | 默认 TTS 返回格式 | `wav` |
 | `BLANK_SPEECH_READ_TIMEOUT` | ASR/TTS 请求读取超时秒数 | `90` |
-| `BLANK_GRAPHRAG_ENABLED` | 是否启用 GraphRAG | `true` |
-| `BLANK_NEO4J_URI` | Neo4j 连接地址 | `bolt://127.0.0.1:7687` |
-| `BLANK_NEO4J_USER` | Neo4j 用户名 | `neo4j` |
-| `BLANK_NEO4J_PASSWORD` | Neo4j 密码 | 无默认安全值 |
+| `BLANK_GRAPHRAG_ENABLED` | 旧 Neo4j GraphRAG 是否启用，仅 `legacy_neo4j` 模式使用 | `true` |
+| `BLANK_NEO4J_URI` | Neo4j 连接地址，仅 `legacy_neo4j` 模式使用 | `bolt://127.0.0.1:7687` |
+| `BLANK_NEO4J_USER` | Neo4j 用户名，仅 `legacy_neo4j` 模式使用 | `neo4j` |
+| `BLANK_NEO4J_PASSWORD` | Neo4j 密码，仅 `legacy_neo4j` 模式使用 | 无默认安全值 |
 | `BLANK_MAX_REQUEST_BYTES` | 非上传 JSON 请求体上限 | `1048576` |
 | `BLANK_ALLOW_PRIVATE_MODEL_URLS` | 是否允许模型 URL 指向私有地址 | `false` |
 | `BLANK_TRUST_PROXY_HEADERS` | 是否信任 `X-Forwarded-*` | `false` |

@@ -2,7 +2,7 @@ name: blank-learning-all-in-one
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     container_name: blank-all-postgres
     restart: unless-stopped
     environment:
@@ -89,6 +89,12 @@ services:
       BLANK_NEO4J_USER: ${BLANK_NEO4J_USER:-neo4j}
       BLANK_NEO4J_PASSWORD: ${BLANK_NEO4J_PASSWORD:-change-this-password}
       BLANK_GRAPHRAG_ENABLED: ${BLANK_GRAPHRAG_ENABLED:-true}
+      BLANK_RAG_BACKEND: ${BLANK_RAG_BACKEND:-sag}
+      BLANK_DB_POOL_MIN_CONN: ${BLANK_DB_POOL_MIN_CONN:-1}
+      BLANK_DB_POOL_MAX_CONN: ${BLANK_DB_POOL_MAX_CONN:-20}
+      BLANK_OCR_ENABLED: ${BLANK_OCR_ENABLED:-false}
+      BLANK_UNLIMITED_OCR_BASE_URL: ${BLANK_UNLIMITED_OCR_BASE_URL:-}
+      BLANK_UNLIMITED_OCR_PATH: ${BLANK_UNLIMITED_OCR_PATH:-/ocr}
       BLANK_MAX_REQUEST_BYTES: ${BLANK_MAX_REQUEST_BYTES:-1048576}
       BLANK_ALLOW_PRIVATE_MODEL_URLS: ${BLANK_ALLOW_PRIVATE_MODEL_URLS:-false}
       BLANK_ALLOW_PUBLIC_REGISTRATION: ${BLANK_ALLOW_PUBLIC_REGISTRATION:-false}

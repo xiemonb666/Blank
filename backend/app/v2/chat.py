@@ -114,6 +114,8 @@ def _build_agent_state(
         "ai_config": ai_config,
         "intent": "",
         "intent_reason": "",
+        "dynamic_agents": [],
+        "dynamic_guidance": "",
         "mentor_reply": "",
         "mentor_thinking": "",
         "feynman_score": {},
@@ -144,12 +146,31 @@ def _critic_should_run(graph_context: dict) -> bool:
     return bool(graph_context.get("chunks") or graph_context.get("subgraphs"))
 
 
+def dynamic_agent_status(agent: str) -> str:
+    return {
+        "planner": "学习规划师正在拆解本轮目标...",
+        "analyst": "机制分析师正在补充因果链...",
+        "coach": "学习教练正在降低表达负荷...",
+        "memory": "记忆管理员正在识别可沉淀线索...",
+    }.get(agent, "动态角色正在协作...")
+
+
+def dynamic_agent_done_status(agent: str) -> str:
+    return {
+        "planner": "学习规划师已完成拆解",
+        "analyst": "机制分析师已完成补充",
+        "coach": "学习教练已完成调节",
+        "memory": "记忆管理员已完成标记",
+    }.get(agent, "动态角色已完成协作")
+
+
 def _retrieve_graph_context(session: LearningSession, ai_config: dict[str, str] | None) -> dict:
     """
-    尝试通过 GraphRAG 混合检索获取知识上下文。
-    若检索失败或 Neo4j 未配置，则回退到 session 的 material_context。
+    尝试通过默认 RAG 后端获取知识上下文。
+    若检索失败或没有索引命中，则回退到 session 的 material_context。
     """
-    from ..services_v2.neo4j_service import graphrag_enabled
+    from ..main import store
+    from ..services_v2.rag_service import retrieve_rag_context
 
     active_node = find_node(session.nodes, session.active_node_id)
     node_title = active_node.title
@@ -159,45 +180,16 @@ def _retrieve_graph_context(session: LearningSession, ai_config: dict[str, str] 
     query = f"{node_title} {material_context[:200]}".strip()
     if not query:
         return {"chunks": [], "subgraphs": []}
-    if not graphrag_enabled():
-        return _fallback_graph_context(session, "GraphRAG 未启用，使用当前材料片段回退")
 
     try:
-        from ..services_v2.vector_service import hybrid_graph_search
-        if ai_config:
-            graph_context = hybrid_graph_search(
-                query,
-                ai_config,
-                top_k=3,
-                tenant_id=session.user_id,
-                user_id=session.user_id,
-                session_id=session.id,
-                source_id=session.id,
-            )
-            if session.organization_id:
-                try:
-                    organization_context = hybrid_graph_search(
-                        query,
-                        ai_config,
-                        top_k=3,
-                        tenant_id=session.organization_id,
-                        session_id=session.organization_id,
-                    )
-                    graph_context = _merge_graph_contexts(graph_context, organization_context)
-                except Exception as org_exc:
-                    safe_org_detail = redact_secret_text(str(org_exc), limit=180)
-                    graph_context = _merge_graph_contexts(
-                        graph_context,
-                        _organization_db_graph_context(session, f"组织 GraphRAG 回退：{safe_org_detail}"),
-                    )
-            else:
-                graph_context = _merge_graph_contexts(graph_context)
+        graph_context = retrieve_rag_context(store, session, ai_config, query=query, top_k=3)
+        if graph_context.get("chunks") or graph_context.get("subgraphs"):
             return graph_context
     except Exception as exc:
         safe_detail = redact_secret_text(str(exc), limit=180)
-        return _fallback_graph_context(session, f"GraphRAG 回退：{safe_detail}")
+        return _fallback_graph_context(session, f"RAG 回退：{safe_detail}")
 
-    return _fallback_graph_context(session)
+    return _fallback_graph_context(session, "RAG 未命中，使用当前材料片段回退")
 
 
 def _merge_graph_contexts(*contexts: dict) -> dict:
@@ -409,14 +401,28 @@ async def v2_chat_stream(payload: V2ChatRequest, user: UserPublic = Depends(requ
                         if node_name == "router":
                             intent = update.get("intent", "question")
                             reason = update.get("intent_reason", "")
+                            dynamic_agents = update.get("dynamic_agents") or []
                             log_debug_event("v2.agent.router", session_id=payload.session_id, intent=intent, reason=reason)
-                            yield _format_sse({"type": "status", "agent": "router", "message": f"意图识别完成：{intent}", "detail": reason})
+                            dynamic_detail = f"{reason}；动态增派：{', '.join(dynamic_agents) if dynamic_agents else '无'}"
+                            yield _format_sse({"type": "status", "agent": "router", "message": f"意图识别完成：{intent}", "detail": dynamic_detail})
+                            for agent in dynamic_agents:
+                                yield _format_sse({"type": "status", "agent": agent, "message": dynamic_agent_status(agent)})
                             if intent == "question":
                                 yield _format_sse({"type": "status", "agent": "socrates", "message": "苏格拉底导师正在生成引导回复..."})
                             elif intent == "explanation":
                                 yield _format_sse({"type": "status", "agent": "feynman", "message": "费曼考官正在进行五维度评分..."})
                             elif intent == "chat":
                                 yield _format_sse({"type": "status", "agent": "socrates", "message": "正在生成友好回复..."})
+
+                        elif node_name in {"planner", "analyst", "coach", "memory"}:
+                            guidance = str(update.get("dynamic_guidance") or "")
+                            log_debug_event("v2.agent.dynamic", session_id=payload.session_id, agent=node_name, guidance=guidance)
+                            yield _format_sse({
+                                "type": "status",
+                                "agent": node_name,
+                                "message": dynamic_agent_done_status(node_name),
+                                "detail": guidance[-180:],
+                            })
 
                         elif node_name == "socrates":
                             thinking = update.get("mentor_thinking", "")

@@ -49,6 +49,7 @@ from .models import (
     OrganizationMemberReport,
     OrganizationMemberSummary,
     OrganizationPublic,
+    OrganizationTraceExportResponse,
     OrganizationTaskAssignment,
     OrganizationTaskCreateRequest,
     OrganizationTaskCreateResponse,
@@ -1157,40 +1158,19 @@ def start_parse_job(title: str, content: str, user: UserPublic) -> ParseJobCreat
 
 def index_session_graphrag(session: LearningSession, content: str, ai_config: dict[str, str]) -> str:
     try:
-        from .services_v2.neo4j_service import extract_and_store_knowledge
-        from .services_v2.vector_service import chunk_and_store
+        from .services_v2.rag_service import index_learning_material
 
-        entity_result = extract_and_store_knowledge(
-            content,
-            ai_config,
-            tenant_id=session.user_id,
-            user_id=session.user_id,
-            session_id=session.id,
-            source_id=session.id,
-        )
-        chunk_result = chunk_and_store(
-            content,
-            session.id,
-            ai_config,
-            tenant_id=session.user_id,
-            user_id=session.user_id,
-            session_id=session.id,
-        )
-        message = (
-            f"GraphRAG 已索引：{entity_result.get('entities', 0)} 个实体、"
-            f"{entity_result.get('relations', 0)} 条关系、{chunk_result.get('chunks', 0)} 个向量片段"
-        )
+        message = index_learning_material(store, session, content, ai_config)
         log_debug_event(
-            "graphrag.index.completed",
+            "rag.index.completed",
             session_id=session.id,
-            entity_result=entity_result,
-            chunk_result=chunk_result,
+            message=message,
         )
         return message
     except Exception as exc:
         safe_detail = redact_secret_text(str(exc), limit=180)
-        log_debug_event("graphrag.index.failed", session_id=session.id, error=safe_detail)
-        return f"GraphRAG 索引回退：{safe_detail}"
+        log_debug_event("rag.index.failed", session_id=session.id, error=safe_detail)
+        return f"RAG 索引回退：{safe_detail}"
 
 
 def index_organization_knowledge_graphrag(
@@ -1201,89 +1181,48 @@ def index_organization_knowledge_graphrag(
 ) -> str:
     try:
         ai_config = active_api_config_or_error()
-        from .services_v2.neo4j_service import extract_and_store_knowledge
-        from .services_v2.vector_service import chunk_and_store
+        from .services_v2.rag_service import index_organization_material
 
-        entity_result = extract_and_store_knowledge(
-            content,
-            ai_config,
-            tenant_id=organization_id,
-            user_id=user_id,
-            session_id=organization_id,
-            source_id=source_id,
-        )
-        chunk_result = chunk_and_store(
-            content,
-            source_id,
-            ai_config,
-            tenant_id=organization_id,
-            user_id=user_id,
-            session_id=organization_id,
-        )
-        message = (
-            f"组织知识库 GraphRAG 已索引：{entity_result.get('entities', 0)} 个实体、"
-            f"{entity_result.get('relations', 0)} 条关系、{chunk_result.get('chunks', 0)} 个向量片段"
-        )
+        message = index_organization_material(store, organization_id, user_id, source_id, content, ai_config)
         log_debug_event(
-            "organization.knowledge.graphrag.completed",
+            "organization.knowledge.rag.completed",
             organization_id=organization_id,
             source_id=source_id,
-            entity_result=entity_result,
-            chunk_result=chunk_result,
+            message=message,
         )
         return message
     except Exception as exc:
         safe_detail = redact_secret_text(str(exc), limit=180)
         log_debug_event(
-            "organization.knowledge.graphrag.failed",
+            "organization.knowledge.rag.failed",
             organization_id=organization_id,
             source_id=source_id,
             error=safe_detail,
         )
-        return f"组织知识库 GraphRAG 回退：{safe_detail}"
+        return f"组织知识库 RAG 回退：{safe_detail}"
 
 
 def delete_organization_knowledge_graphrag(organization_id: str, source_id: str) -> str:
     try:
-        from .services_v2.neo4j_service import get_neo4j_driver, graphrag_enabled
+        from .services_v2.rag_service import delete_organization_source
 
-        if not graphrag_enabled():
-            return "组织知识库 GraphRAG 未启用，无需清理"
-        driver = get_neo4j_driver()
-        with driver.session() as session:
-            result = session.run(
-                """
-                MATCH (n)
-                WHERE n.tenant_id = $tenant_id
-                  AND n.session_id = $session_id
-                  AND n.source_id = $source_id
-                WITH collect(n) AS nodes, count(n) AS deleted
-                FOREACH (node IN nodes | DETACH DELETE node)
-                RETURN deleted
-                """,
-                tenant_id=organization_id,
-                session_id=organization_id,
-                source_id=source_id,
-            )
-            record = result.single()
-        deleted = int(record["deleted"] if record else 0)
-        message = f"组织知识库 GraphRAG 已清理：{deleted} 个节点"
+        message = delete_organization_source(store, organization_id, source_id)
         log_debug_event(
-            "organization.knowledge.graphrag.deleted",
+            "organization.knowledge.rag.deleted",
             organization_id=organization_id,
             source_id=source_id,
-            deleted=deleted,
+            message=message,
         )
         return message
     except Exception as exc:
         safe_detail = redact_secret_text(str(exc), limit=180)
         log_debug_event(
-            "organization.knowledge.graphrag.delete_failed",
+            "organization.knowledge.rag.delete_failed",
             organization_id=organization_id,
             source_id=source_id,
             error=safe_detail,
         )
-        return f"组织知识库 GraphRAG 清理回退：{safe_detail}"
+        return f"组织知识库 RAG 清理回退：{safe_detail}"
 
 
 @app.get("/api/parse-jobs/{job_id}", response_model=ParseJobStatusResponse)
@@ -1713,6 +1652,16 @@ def get_current_organization_dashboard(manager: UserPublic = Depends(require_org
     )
 
 
+@app.get("/api/organizations/current/export", response_model=OrganizationTraceExportResponse)
+def export_current_organization_trace(manager: UserPublic = Depends(require_org_manager)) -> OrganizationTraceExportResponse:
+    organization_id = manager.organization_id or ""
+    export = store.organization_trace_export(organization_id)
+    if export is None:
+        raise HTTPException(status_code=404, detail="当前账号未加入组织")
+    audit_event(manager, "organization.trace.export", "organization", organization_id)
+    return export
+
+
 @app.post("/api/organizations/current/tasks", response_model=OrganizationTaskCreateResponse)
 def create_current_organization_task(
     payload: OrganizationTaskCreateRequest,
@@ -1857,24 +1806,9 @@ def delete_current_organization_knowledge(
 
 
 def split_organization_knowledge_chunks(content: str, max_chars: int = 900) -> list[str]:
-    normalized = "\n".join(line.strip() for line in content.splitlines())
-    parts = [part.strip() for part in normalized.split("\n\n") if part.strip()]
-    chunks: list[str] = []
-    current = ""
-    for part in parts or [normalized.strip()]:
-        if not part:
-            continue
-        if current and len(current) + len(part) + 2 > max_chars:
-            chunks.append(current[:max_chars])
-            current = part
-        else:
-            current = f"{current}\n\n{part}".strip() if current else part
-        while len(current) > max_chars:
-            chunks.append(current[:max_chars])
-            current = current[max_chars:]
-    if current.strip():
-        chunks.append(current.strip()[:max_chars])
-    return chunks[:200]
+    from .services_v2.semantic_splitter import semantic_text_chunks
+
+    return [chunk.text for chunk in semantic_text_chunks(content, max_chars=max_chars, overlap_chars=80)[:200]]
 
 
 @app.get("/api/admin/users", response_model=list[UserPublic])

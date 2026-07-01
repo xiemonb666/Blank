@@ -111,6 +111,17 @@ curl_download() {
   fi
 }
 
+miniforge_release_asset_url() {
+  local suffix="$1"
+  local extension="$2"
+  local api_body pattern
+  api_body="$(mktemp)"
+  curl_download "https://api.github.com/repos/conda-forge/miniforge/releases/latest" "${api_body}"
+  pattern="Miniforge3-[0-9][^\"]*-${suffix}${extension}"
+  sed -nE "s/.*\"browser_download_url\": \"([^\"]*${pattern})\".*/\\1/p" "${api_body}" | head -n 1
+  rm -f "${api_body}"
+}
+
 install_local_miniforge() {
   local suffix installer_url sha_url installer_file sha_file expected
   suffix="$(detect_miniforge_suffix)"
@@ -123,7 +134,16 @@ install_local_miniforge() {
   _blank_env_log "正在下载 Miniforge 安装包"
   curl_download "${installer_url}" "${installer_file}"
   _blank_env_log "正在下载 SHA256 校验文件"
-  curl_download "${sha_url}" "${sha_file}"
+  if ! curl_download "${sha_url}" "${sha_file}"; then
+    _blank_env_log "latest 校验文件不可用，正在解析版本化 Miniforge 资产"
+    installer_url="$(miniforge_release_asset_url "${suffix}" "")"
+    sha_url="$(miniforge_release_asset_url "${suffix}" ".sha256")"
+    if [[ -z "${installer_url}" || -z "${sha_url}" ]]; then
+      _blank_env_fail "无法解析 Miniforge 版本化安装包或 SHA256 校验文件。"
+    fi
+    curl_download "${installer_url}" "${installer_file}"
+    curl_download "${sha_url}" "${sha_file}"
+  fi
 
   expected="$(awk '{print $1}' "${sha_file}")"
   sha256_verify "${installer_file}" "${expected}"

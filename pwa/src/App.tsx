@@ -71,6 +71,7 @@ import {
   deleteOrganizationKnowledge,
   deleteSession,
   exportBlindReviewAnswers,
+  exportOrganizationTrace,
   exportResearchExperiments,
   getSpeechCapabilities,
   getFeynmanQuestions,
@@ -1213,6 +1214,17 @@ function App() {
     URL.revokeObjectURL(url);
   }
 
+  async function exportOrganizationTraceData() {
+    const payload = await exportOrganizationTrace();
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `blank-organization-trace-${new Date().toISOString().slice(0, 10)}.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
   async function saveApiConfig(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     await runBusy(async () => {
@@ -1755,6 +1767,9 @@ function App() {
           onToggleTaskMember={toggleOrganizationTaskMember}
           onRefresh={() => {
             void runBusy(refreshOrganization);
+          }}
+          onExportTrace={() => {
+            void runBusy(exportOrganizationTraceData);
           }}
           onCreateTask={createOrganizationLearningTask}
           onUploadKnowledge={uploadOrganizationKnowledgeFile}

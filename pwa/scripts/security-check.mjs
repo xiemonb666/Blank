@@ -9,12 +9,13 @@ const distIndexHtml = existsSync(distIndexPath) ? readFileSync(distIndexPath, "u
 const apiSource = readFileSync(join(root, "src", "api.ts"), "utf8");
 const appSource = readFileSync(join(root, "src", "App.tsx"), "utf8");
 const v2HookSource = readFileSync(join(root, "src", "hooks", "useV2Chat.ts"), "utf8");
+const allInOneNginx = readFileSync(join(root, "..", "docker", "nginx", "all-in-one.conf"), "utf8");
+const deployNginx = readFileSync(join(root, "..", "deploy", "nginx.blank.conf"), "utf8");
 
 const requiredDevCsp = [
   "default-src 'self'",
   "base-uri 'none'",
   "object-src 'none'",
-  "frame-ancestors 'none'",
   "form-action 'self'",
   "script-src 'self' 'unsafe-inline'",
   "style-src 'self' 'unsafe-inline'",
@@ -32,7 +33,6 @@ if (distIndexHtml) {
     "default-src 'self'",
     "base-uri 'none'",
     "object-src 'none'",
-    "frame-ancestors 'none'",
     "form-action 'self'",
     "script-src 'self'",
     "style-src 'self'",
@@ -48,6 +48,17 @@ if (distIndexHtml) {
   }
   if (distIndexHtml.includes('src="/assets/') || distIndexHtml.includes('href="/assets/')) {
     throw new Error("Production build assets must use relative paths for subpath/file deployments.");
+  }
+}
+
+for (const [name, source] of [
+  ["docker all-in-one nginx", allInOneNginx],
+  ["deploy nginx", deployNginx],
+]) {
+  for (const directive of ["Content-Security-Policy", "frame-ancestors 'none'"]) {
+    if (!source.includes(directive)) {
+      throw new Error(`${name} must send CSP header directive: ${directive}`);
+    }
   }
 }
 

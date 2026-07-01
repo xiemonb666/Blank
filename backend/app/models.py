@@ -529,9 +529,21 @@ class OrganizationKnowledgeItem(BaseModel):
     updated_at: datetime
 
 
+class OrganizationSessionTrace(BaseModel):
+    session: SessionSummary
+    nodes: list[KnowledgeNode] = Field(default_factory=list)
+    messages: list[ChatMessage] = Field(default_factory=list)
+    node_profiles: dict[str, NodeLearningProfile] = Field(default_factory=dict)
+    feynman_questions: dict[str, list[FeynmanQuestion]] = Field(default_factory=dict)
+    feynman_answers: dict[str, dict[str, FeynmanAnswer]] = Field(default_factory=dict)
+    feynman_followups: dict[str, dict[str, FeynmanFollowUpState]] = Field(default_factory=dict)
+    feynman_assessments: dict[str, FeynmanAssessmentRecord] = Field(default_factory=dict)
+
+
 class OrganizationMemberReport(BaseModel):
     user: UserPublic
     sessions: list[SessionSummary] = Field(default_factory=list)
+    session_traces: list[OrganizationSessionTrace] = Field(default_factory=list)
     feynman_answers: list[ResearchBlindReviewAnswer] = Field(default_factory=list)
     dimension_scores: list[DimensionScore] = Field(default_factory=list)
     mastered_count: int = Field(ge=0)
@@ -543,6 +555,12 @@ class OrganizationDashboardResponse(BaseModel):
     organization: OrganizationPublic
     dashboard: ResearchDashboardResponse
     members: list[OrganizationMemberSummary] = Field(default_factory=list)
+
+
+class OrganizationTraceExportResponse(BaseModel):
+    generated_at: datetime
+    organization: OrganizationPublic
+    members: list[OrganizationMemberReport] = Field(default_factory=list)
 
 
 class SessionCreateRequest(StrictRequestModel):
