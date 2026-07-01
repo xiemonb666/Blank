@@ -436,10 +436,42 @@ p {
 }
 
 .segmented-control button {
+  display: inline-grid;
+  grid-template-columns: auto auto;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   min-height: 38px;
   padding: 0 8px;
   font-size: var(--text-xs);
   font-weight: 900;
+}
+
+.segmented-control.vertical {
+  grid-template-columns: 1fr;
+  align-content: start;
+}
+
+.segmented-control.vertical button {
+  grid-template-columns: 22px minmax(0, 1fr);
+  justify-content: stretch;
+  min-height: 40px;
+  padding: 0 9px;
+  text-align: left;
+}
+
+.segmented-icon {
+  display: inline-grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+}
+
+.segmented-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .segmented-control button.active {

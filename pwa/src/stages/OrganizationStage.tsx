@@ -1,4 +1,4 @@
-import { ChangeEvent, CSSProperties, FormEvent, useState } from "react";
+import { ChangeEvent, CSSProperties, FormEvent, useState, type ReactNode } from "react";
 import { ArrowRight, BarChart3, ClipboardList, Database, Download, FileUp, RefreshCw, Send, Users } from "lucide-react";
 import type {
   OrganizationDashboard,
@@ -8,6 +8,13 @@ import type {
 } from "../types";
 
 type OrganizationTab = "members" | "tasks" | "knowledge" | "research";
+
+const organizationTabMeta: Record<OrganizationTab, { label: string; icon: ReactNode }> = {
+  members: { label: "成员", icon: <Users size={16} /> },
+  tasks: { label: "任务", icon: <ClipboardList size={16} /> },
+  knowledge: { label: "知识库", icon: <Database size={16} /> },
+  research: { label: "研究", icon: <BarChart3 size={16} /> },
+};
 
 interface OrganizationStageProps {
   dashboard: OrganizationDashboard | null;
@@ -103,7 +110,8 @@ export function OrganizationStage({
       <nav className="organization-tabs" aria-label="组织管理标签">
         {(["members", "tasks", "knowledge", "research"] as OrganizationTab[]).map((tab) => (
           <button className={activeTab === tab ? "active" : ""} type="button" key={tab} onClick={() => setActiveTab(tab)}>
-            {tabLabel(tab)}
+            <span className="segmented-icon" aria-hidden="true">{organizationTabMeta[tab].icon}</span>
+            <span className="segmented-label">{organizationTabMeta[tab].label}</span>
           </button>
         ))}
       </nav>
@@ -298,19 +306,6 @@ export function OrganizationStage({
       )}
     </div>
   );
-}
-
-function tabLabel(tab: OrganizationTab) {
-  switch (tab) {
-    case "members":
-      return "成员";
-    case "tasks":
-      return "任务";
-    case "knowledge":
-      return "知识库";
-    case "research":
-      return "组织研究";
-  }
 }
 
 function formatMetric(value: number, unit: string) {

@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState, type ReactNode } from "react";
 import { useGSAP } from "@gsap/react";
 import gsap from "gsap";
-import { BarChart3, BrainCircuit, ChevronDown, Database, Download, FileText, RefreshCw, Upload } from "lucide-react";
+import { BarChart3, BrainCircuit, ChevronDown, Database, Download, FileText, Network, RefreshCw, Upload } from "lucide-react";
 import { PagedList, SegmentedControl } from "../components/DesignPrimitives";
 import type {
   MaterialQualitySummary,
@@ -15,12 +15,12 @@ gsap.registerPlugin(useGSAP);
 
 type ResearchTab = "overview" | "diagnosis" | "evidence" | "experiment" | "import";
 
-const researchTabs: Record<ResearchTab, { label: string; caption: string }> = {
-  overview: { label: "总览", caption: "班级指标、薄弱点和材料质量。" },
-  diagnosis: { label: "诊断", caption: "材料质量、误区标签和长期记忆类别。" },
-  evidence: { label: "证据", caption: "RAG 证据、出处和依赖图谱。" },
-  experiment: { label: "实验", caption: "前后测、盲评一致性和样本记录。" },
-  import: { label: "导入", caption: "匿名研究记录导入与导出。" },
+const researchTabs: Record<ResearchTab, { label: string; caption: string; icon: ReactNode }> = {
+  overview: { label: "总览", caption: "班级指标、薄弱点和材料质量。", icon: <BarChart3 size={16} /> },
+  diagnosis: { label: "诊断", caption: "材料质量、误区标签和长期记忆类别。", icon: <BrainCircuit size={16} /> },
+  evidence: { label: "证据", caption: "RAG 证据、出处和依赖图谱。", icon: <Network size={16} /> },
+  experiment: { label: "实验", caption: "前后测、盲评一致性和样本记录。", icon: <FileText size={16} /> },
+  import: { label: "导入", caption: "匿名研究记录导入与导出。", icon: <Upload size={16} /> },
 };
 
 interface ResearchStageProps {
@@ -53,7 +53,7 @@ export function ResearchStage({
   const [activeTab, setActiveTab] = useState<ResearchTab>(() => resolveInitialResearchTab());
 
   return (
-    <div className="research-layout research-tabbed">
+    <div className={`research-layout research-tabbed research-view-${activeTab}`}>
       <section className="research-panel research-overview research-command-panel">
         <div className="section-heading research-heading-row">
           <div>
@@ -90,6 +90,7 @@ export function ResearchStage({
           label="研究端视图"
           value={activeTab}
           options={researchTabs}
+          orientation="vertical"
           className="research-tabs"
           onChange={setActiveTab}
         />
@@ -105,6 +106,7 @@ export function ResearchStage({
             <PagedList
               items={metrics}
               pageSize={4}
+              mediumPageSize={2}
               compactPageSize={1}
               ariaLabel="研究指标"
               className="research-metric-pager"
@@ -113,7 +115,7 @@ export function ResearchStage({
             />
           </section>
 
-          <section className="research-panel research-compact">
+          <section className="research-panel research-compact research-weak-panel">
             <div className="box-title">
               <BrainCircuit size={18} />
               <span>班级薄弱点</span>
@@ -121,7 +123,7 @@ export function ResearchStage({
             <RankList items={dashboard?.weak_points ?? []} emptyText="暂无低于 70 分的维度记录。" valueLabel="均分" />
           </section>
 
-          <section className="research-panel research-compact">
+          <section className="research-panel research-compact research-distribution-panel">
             <div className="box-title">
               <BarChart3 size={18} />
               <span>费曼评分分布</span>

@@ -356,7 +356,17 @@ select {
 }
 
 .research-tabs {
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: 1fr;
+}
+
+.admin-tabs.segmented-control.vertical,
+.research-tabs.segmented-control.vertical {
+  gap: 6px;
+}
+
+.admin-tabs.segmented-control.vertical button,
+.research-tabs.segmented-control.vertical button {
+  min-block-size: 0;
 }
 
 .research-panel {
@@ -384,12 +394,33 @@ select {
 }
 
 .research-metric-card {
+  min-height: 88px;
   min-block-size: 88px;
   padding: 10px;
 }
 
 .research-metric-card strong {
   font-size: clamp(20px, 1.6vw, 26px);
+}
+
+.research-compact .distribution-bars {
+  gap: 5px;
+}
+
+.research-compact .distribution-row {
+  grid-template-columns: 48px minmax(0, 1fr) 32px;
+  gap: 6px;
+  padding: 4px 7px;
+}
+
+.research-compact .distribution-row span,
+.research-compact .distribution-row strong {
+  font-size: var(--text-micro);
+  line-height: 1;
+}
+
+.research-compact .distribution-row div {
+  height: 10px;
 }
 
 .research-explain-panel {
@@ -604,6 +635,66 @@ select {
   .research-compact {
     grid-column: span 3;
   }
+
+  .research-command-panel {
+    grid-template-rows: auto;
+  }
+
+  .research-command-panel .research-tldr {
+    display: none;
+  }
+
+  .research-tabs {
+    grid-row: 1;
+  }
+
+  .research-metric-card {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    align-content: center;
+    min-height: 64px;
+    min-block-size: 64px;
+    padding: 8px;
+  }
+
+  .research-metric-card strong {
+    text-align: right;
+  }
+
+  .research-metric-card small {
+    display: none;
+  }
+
+  .research-layout.research-tabbed.research-view-overview {
+    grid-template-rows: minmax(0, 0.75fr) minmax(0, 0.95fr) minmax(0, 1fr);
+    grid-auto-rows: 0;
+  }
+
+  .research-view-overview .research-command-panel {
+    grid-row: 1;
+  }
+
+  .research-view-overview .research-overview-metrics {
+    grid-row: 2;
+  }
+
+  .research-view-overview .research-weak-panel,
+  .research-view-overview .research-distribution-panel {
+    grid-row: 3;
+  }
+
+  .research-panel .research-rank-row,
+  .research-panel .memory-category-row {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .research-panel .research-rank-row strong,
+  .research-panel .research-rank-row small,
+  .research-panel .memory-category-row strong,
+  .research-panel .memory-category-row small {
+    text-align: left;
+  }
 }
 
 @media (max-width: 720px) {
@@ -686,6 +777,8 @@ select {
   .admin-command-panel {
     grid-column: 1;
     grid-row: 1;
+    grid-template-columns: 1fr;
+    grid-template-rows: auto;
     padding: 8px;
   }
 
@@ -693,6 +786,22 @@ select {
   .admin-command-panel .admin-status-strip,
   .admin-command-panel .admin-mode-panel {
     display: none;
+  }
+
+  .admin-tabs {
+    grid-column: 1;
+    grid-row: 1;
+    grid-template-columns: 1fr;
+  }
+
+  .admin-tabs.segmented-control.vertical {
+    gap: 5px;
+  }
+
+  .admin-tabs.segmented-control.vertical button {
+    grid-template-columns: 20px minmax(0, 1fr);
+    min-block-size: 32px;
+    padding-inline: 8px;
   }
 
   .admin-tabbed .admin-config-panel {
@@ -775,7 +884,7 @@ select {
   }
 
   .research-tabs {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: 1fr;
   }
 
   .research-metric-pager .paged-list-body,
@@ -881,20 +990,41 @@ select {
   }
 
   .research-layout.research-tabbed {
-    grid-template-rows: 132px minmax(0, 1fr);
+    grid-template-rows: 166px minmax(0, 1fr);
     grid-auto-rows: 0;
     gap: 6px;
+  }
+
+  .research-layout.research-tabbed.research-view-overview {
+    grid-template-rows: 166px minmax(0, 0.56fr) minmax(0, 0.44fr);
   }
 
   .research-command-panel {
     grid-column: 1 / -1;
     grid-row: 1;
+    grid-template-columns: 1fr;
+    grid-template-rows: auto;
     padding: 8px;
   }
 
   .research-command-panel .research-heading-row,
   .research-command-panel .research-tldr {
     display: none;
+  }
+
+  .research-tabs {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .research-tabs.segmented-control.vertical {
+    gap: 5px;
+  }
+
+  .research-tabs.segmented-control.vertical button {
+    grid-template-columns: 20px minmax(0, 1fr);
+    min-block-size: 28px;
+    padding-inline: 8px;
   }
 
   .research-layout.research-tabbed > .research-panel:not(.research-command-panel) {
@@ -916,7 +1046,26 @@ select {
     min-block-size: 0;
   }
 
+  .research-layout.research-tabbed.research-view-overview > .research-distribution-panel {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-row: 3;
+    grid-template-rows: auto minmax(0, 1fr);
+    align-self: stretch;
+    align-content: stretch;
+    block-size: 100%;
+  }
+
+  .research-distribution-panel .distribution-bars {
+    gap: 4px;
+  }
+
+  .research-distribution-panel .distribution-row {
+    padding-block: 3px;
+  }
+
   .research-metric-card {
+    min-height: 112px;
     min-block-size: 112px;
   }
 

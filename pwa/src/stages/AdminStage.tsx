@@ -1,5 +1,5 @@
-import { FormEvent, useState } from "react";
-import { ArrowRight, Plus, Save } from "lucide-react";
+import { FormEvent, useState, type ReactNode } from "react";
+import { ArrowRight, Bot, Mic2, Plus, Save, UsersRound } from "lucide-react";
 import type { AdminUserCreateInput, AdminUserUpdateInput, ApiConfigInput, SpeechConfigInput } from "../api";
 import { PagedList, SegmentedControl } from "../components/DesignPrimitives";
 import { V2ModeToggle } from "../components/V2ModeToggle";
@@ -33,10 +33,10 @@ interface AdminStageProps {
 
 type AdminTab = "model" | "speech" | "users";
 
-const adminTabs: Record<AdminTab, { label: string; caption: string }> = {
-  model: { label: "模型", caption: "配置默认模型接口和可用 Provider。" },
-  speech: { label: "语音", caption: "管理 ASR/TTS 服务配置。" },
-  users: { label: "用户", caption: "创建账号并调整角色权限。" },
+const adminTabs: Record<AdminTab, { label: string; caption: string; icon: ReactNode }> = {
+  model: { label: "模型", caption: "配置默认模型接口和可用 Provider。", icon: <Bot size={16} /> },
+  speech: { label: "语音", caption: "管理 ASR/TTS 服务配置。", icon: <Mic2 size={16} /> },
+  users: { label: "用户", caption: "创建账号并调整角色权限。", icon: <UsersRound size={16} /> },
 };
 
 export function AdminStage({
@@ -171,6 +171,7 @@ export function AdminStage({
           label="后台管理视图"
           value={activeTab}
           options={adminTabs}
+          orientation="vertical"
           className="admin-tabs"
           onChange={setActiveTab}
         />

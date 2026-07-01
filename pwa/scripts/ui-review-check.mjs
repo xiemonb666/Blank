@@ -307,6 +307,8 @@ const checks = [
     expression: `JSON.stringify({
       admin: Boolean(document.querySelector('.admin-layout')),
       tabs: document.querySelectorAll('.admin-tabs button').length,
+      verticalTabs: document.querySelector('.admin-tabs')?.getAttribute('aria-orientation') === 'vertical',
+      tabIcons: document.querySelectorAll('.admin-tabs .segmented-icon').length,
       activeTab: document.querySelector('.admin-tabs .active')?.textContent?.trim() ?? '',
       statusStrip: document.querySelector('.admin-status-strip')?.textContent?.includes('未执行连通性测试时不显示模型健康结论') ?? false,
       modelForm: document.querySelector('.admin-config-panel')?.textContent?.includes('模型接口') ?? false,
@@ -316,7 +318,7 @@ const checks = [
       overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth,
       overflowY: document.documentElement.scrollHeight > document.documentElement.clientHeight
     })`,
-    assert: (value) => value.admin && value.tabs === 3 && value.activeTab === "模型" && value.statusStrip && value.modelForm && value.configCount && value.activeProvider && value.tokenSummary && !value.overflowX && !value.overflowY,
+    assert: (value) => value.admin && value.tabs === 3 && value.verticalTabs && value.tabIcons === 3 && value.activeTab === "模型" && value.statusStrip && value.modelForm && value.configCount && value.activeProvider && value.tokenSummary && !value.overflowX && !value.overflowY,
     keyboardTargets: [".admin-form select", ".admin-form input", ".admin-form .primary-button"],
   },
   {
@@ -359,15 +361,28 @@ const checks = [
       heading: document.querySelector('.research-overview')?.textContent?.includes('教师端 / 研究端') ?? false,
       metrics: document.querySelectorAll('.research-metric-card').length,
       tabs: document.querySelectorAll('.research-tabs button').length,
+      verticalTabs: document.querySelector('.research-tabs')?.getAttribute('aria-orientation') === 'vertical',
+      tabIcons: document.querySelectorAll('.research-tabs .segmented-icon').length,
       weakPoints: document.querySelector('.research-rank-list')?.textContent?.includes('transfer') ?? false,
       distribution: document.querySelectorAll('.distribution-row').length === 4,
+      distributionVisible: [...document.querySelectorAll('.distribution-row')].some((element) => {
+        const rect = element.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0 && window.getComputedStyle(element).display !== 'none';
+      }),
+      distributionContained: (() => {
+        const panel = [...document.querySelectorAll('.research-panel')].find((element) => element.textContent.includes('费曼评分分布'))?.getBoundingClientRect();
+        return Boolean(panel && [...document.querySelectorAll('.distribution-row')].every((element) => {
+          const rect = element.getBoundingClientRect();
+          return rect.top >= panel.top - 1 && rect.bottom <= panel.bottom + 1;
+        }));
+      })(),
       exportButton: document.querySelector('.research-actions')?.textContent?.includes('匿名导出') ?? false,
       blindExport: document.querySelector('.research-actions')?.textContent?.includes('盲评答卷') ?? false,
       viewportWidth: window.innerWidth,
       overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth,
       overflowY: document.documentElement.scrollHeight > document.documentElement.clientHeight
     })`,
-    assert: (value) => value.research && value.heading && value.tabs === 5 && value.metrics >= (value.viewportWidth <= 720 ? 1 : 4) && value.weakPoints && value.distribution && value.exportButton && value.blindExport && !value.overflowX && !value.overflowY,
+    assert: (value) => value.research && value.heading && value.tabs === 5 && value.verticalTabs && value.tabIcons === 5 && value.metrics >= (value.viewportWidth <= 720 ? 1 : value.viewportWidth <= 1080 ? 2 : 4) && value.weakPoints && value.distribution && value.distributionVisible && value.distributionContained && value.exportButton && value.blindExport && !value.overflowX && !value.overflowY,
     keyboardTargets: [".rail-button.active", ".research-tabs .active", ".research-tabs button:nth-child(4)", ".icon-button"],
   },
   {

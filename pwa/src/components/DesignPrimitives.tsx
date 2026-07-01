@@ -106,19 +106,21 @@ export function SegmentedControl<T extends string>({
   label,
   value,
   options,
+  orientation = "horizontal",
   disabled = false,
   className = "",
   onChange,
 }: {
   label: string;
   value: T;
-  options: Record<T, { label: string; caption?: string }>;
+  options: Record<T, { label: string; caption?: string; icon?: ReactNode }>;
+  orientation?: "horizontal" | "vertical";
   disabled?: boolean;
   className?: string;
   onChange: (value: T) => void;
 }) {
   return (
-    <div className={`segmented-control ${className}`} role="tablist" aria-label={label}>
+    <div className={`segmented-control ${orientation === "vertical" ? "vertical" : ""} ${className}`} role="tablist" aria-label={label} aria-orientation={orientation}>
       {(Object.keys(options) as T[]).map((key) => (
         <button
           key={key}
@@ -127,8 +129,10 @@ export function SegmentedControl<T extends string>({
           onClick={() => onChange(key)}
           disabled={disabled}
           title={options[key].caption}
+          aria-current={value === key ? "page" : undefined}
         >
-          {options[key].label}
+          {options[key].icon && <span className="segmented-icon" aria-hidden="true">{options[key].icon}</span>}
+          <span className="segmented-label">{options[key].label}</span>
         </button>
       ))}
     </div>
@@ -138,6 +142,8 @@ export function SegmentedControl<T extends string>({
 export function PagedList<T>({
   items,
   pageSize,
+  mediumPageSize,
+  mediumQuery = "(max-width: 1080px)",
   compactPageSize,
   compactQuery = "(max-width: 720px)",
   renderItem,
@@ -147,6 +153,8 @@ export function PagedList<T>({
 }: {
   items: T[];
   pageSize: number;
+  mediumPageSize?: number;
+  mediumQuery?: string;
   compactPageSize?: number;
   compactQuery?: string;
   renderItem: (item: T, index: number) => ReactNode;
@@ -155,8 +163,9 @@ export function PagedList<T>({
   className?: string;
 }) {
   const [page, setPage] = useState(0);
+  const [isMedium, setIsMedium] = useState(false);
   const [isCompact, setIsCompact] = useState(false);
-  const effectivePageSize = isCompact && compactPageSize ? compactPageSize : pageSize;
+  const effectivePageSize = isCompact && compactPageSize ? compactPageSize : isMedium && mediumPageSize ? mediumPageSize : pageSize;
   const pageCount = Math.max(1, Math.ceil(items.length / effectivePageSize));
   const safePage = Math.min(page, pageCount - 1);
   const visibleItems = useMemo(
@@ -172,6 +181,15 @@ export function PagedList<T>({
     media.addEventListener("change", syncCompact);
     return () => media.removeEventListener("change", syncCompact);
   }, [compactPageSize, compactQuery]);
+
+  useEffect(() => {
+    if (!mediumPageSize) return;
+    const media = window.matchMedia(mediumQuery);
+    const syncMedium = () => setIsMedium(media.matches);
+    syncMedium();
+    media.addEventListener("change", syncMedium);
+    return () => media.removeEventListener("change", syncMedium);
+  }, [mediumPageSize, mediumQuery]);
 
   useEffect(() => {
     setPage((current) => Math.min(current, pageCount - 1));
