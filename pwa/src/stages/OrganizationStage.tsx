@@ -1,5 +1,5 @@
 import { ChangeEvent, CSSProperties, FormEvent, useState } from "react";
-import { ArrowRight, BarChart3, ClipboardList, Database, FileUp, RefreshCw, Send, Users } from "lucide-react";
+import { ArrowRight, BarChart3, ClipboardList, Database, Download, FileUp, RefreshCw, Send, Users } from "lucide-react";
 import type {
   OrganizationDashboard,
   OrganizationKnowledgeItem,
@@ -26,6 +26,7 @@ interface OrganizationStageProps {
   onTaskTargetModeChange: (value: "all" | "selected") => void;
   onToggleTaskMember: (userId: string) => void;
   onRefresh: () => void;
+  onExportTrace: () => void;
   onCreateTask: (event: FormEvent<HTMLFormElement>) => void;
   onUploadKnowledge: (event: ChangeEvent<HTMLInputElement>) => void;
   onDeleteKnowledge: (item: OrganizationKnowledgeItem) => void;
@@ -49,6 +50,7 @@ export function OrganizationStage({
   onTaskTargetModeChange,
   onToggleTaskMember,
   onRefresh,
+  onExportTrace,
   onCreateTask,
   onUploadKnowledge,
   onDeleteKnowledge,
@@ -71,10 +73,16 @@ export function OrganizationStage({
             <h2>{organization?.name ?? "组织管理台"}</h2>
             <span>组织 ID：{organization?.code ?? "读取中"} · 成员 {organization?.member_count ?? members.length} 人</span>
           </div>
-          <button className="secondary-button compact" type="button" onClick={onRefresh} disabled={isBusy}>
-            <RefreshCw size={16} />
-            刷新
-          </button>
+          <div className="research-actions">
+            <button className="secondary-button compact" type="button" onClick={onRefresh} disabled={isBusy}>
+              <RefreshCw size={16} />
+              刷新
+            </button>
+            <button className="secondary-button compact" type="button" onClick={onExportTrace} disabled={isBusy}>
+              <Download size={16} />
+              导出溯源
+            </button>
+          </div>
         </div>
         <div className="admin-status-strip" aria-label="组织统计">
           {metrics.slice(0, 4).map((metric) => (

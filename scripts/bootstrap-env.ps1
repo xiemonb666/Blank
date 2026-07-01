@@ -103,6 +103,19 @@ function Initialize-BlankEnv {
         }
     }
 
+    function Get-MiniforgeAssetUrl {
+        param([string]$Suffix, [string]$Extension)
+        try {
+            $release = Invoke-RestMethod -Uri "https://api.github.com/repos/conda-forge/miniforge/releases/latest" -UseBasicParsing -ErrorAction Stop
+        } catch {
+            Fail "解析 Miniforge 最新版本失败：$_"
+        }
+        $pattern = "^Miniforge3-[0-9].*-$([regex]::Escape($Suffix))$([regex]::Escape($Extension))$"
+        $asset = $release.assets | Where-Object { $_.name -match $pattern } | Select-Object -First 1
+        if (-not $asset) { return $null }
+        return $asset.browser_download_url
+    }
+
     function Install-LocalMiniforge {
         $suffix = "Windows-x86_64.exe"
         $installerUrl = "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-${suffix}"
@@ -114,7 +127,18 @@ function Initialize-BlankEnv {
         Log "正在下载 Miniforge 安装包"
         Download-File $installerUrl $installerFile
         Log "正在下载 SHA256 校验文件"
-        Download-File $shaUrl $shaFile
+        try {
+            Download-File $shaUrl $shaFile
+        } catch {
+            Log "latest 校验文件不可用，正在解析版本化 Miniforge 资产"
+            $versionedInstaller = Get-MiniforgeAssetUrl $suffix ""
+            $versionedSha = Get-MiniforgeAssetUrl $suffix ".sha256"
+            if (-not $versionedInstaller -or -not $versionedSha) {
+                Fail "无法解析 Miniforge 版本化安装包或 SHA256 校验文件。"
+            }
+            Download-File $versionedInstaller $installerFile
+            Download-File $versionedSha $shaFile
+        }
 
         $expected = (Get-Content $shaFile -TotalCount 1).Trim().Split()[0]
         Verify-Sha256 $installerFile $expected

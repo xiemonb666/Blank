@@ -8,7 +8,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import main as app_main
-from app.models import LearningSession, KnowledgeNode
+from app.models import (
+    ChatMessage,
+    DimensionScore,
+    FeynmanAnswer,
+    FeynmanAssessmentRecord,
+    FeynmanQuestion,
+    LearningSession,
+    KnowledgeNode,
+)
 from app.security import clear_rate_limits
 from app.store import SessionStore
 
@@ -333,6 +341,7 @@ def test_v2_streams_finalize_output_when_graph_has_no_message(monkeypatch) -> No
 def test_v2_graphrag_search_is_scoped_by_session(monkeypatch) -> None:
     from app.services_v2 import vector_service
 
+    monkeypatch.setenv("BLANK_RAG_BACKEND", "legacy_neo4j")
     monkeypatch.setenv("BLANK_GRAPHRAG_ENABLED", "true")
     calls: list[dict[str, str]] = []
 
@@ -369,6 +378,7 @@ def test_v2_graphrag_search_is_scoped_by_session(monkeypatch) -> None:
 def test_v2_graphrag_search_includes_organization_scope(monkeypatch) -> None:
     from app.services_v2 import vector_service
 
+    monkeypatch.setenv("BLANK_RAG_BACKEND", "legacy_neo4j")
     monkeypatch.setenv("BLANK_GRAPHRAG_ENABLED", "true")
     calls: list[dict[str, str]] = []
 
@@ -418,6 +428,51 @@ def test_v2_graphrag_search_includes_organization_scope(monkeypatch) -> None:
     ]
 
 
+def test_v2_uses_sag_by_default(monkeypatch) -> None:
+    from app.services_v2.sag_service import index_sag_text
+
+    active_config()
+    client = TestClient(app_main.app)
+    headers = auth_headers(client, "v2_sag_default")
+    user_id = registered_user_id("v2_sag_default")
+    session = make_session(user_id)
+    index_sag_text(
+        app_main.store,
+        "注意力机制会根据查询和键的相关性分配权重，帮助模型聚焦关键信息。",
+        tenant_id=user_id,
+        user_id=user_id,
+        session_id=session.id,
+        source_id=session.id,
+        ai_config=None,
+    )
+
+    captured_contexts: list[dict] = []
+
+    class CaptureGraph:
+        async def astream(self, initial_state, stream_mode="updates"):
+            captured_contexts.append(initial_state["graph_context"])
+            yield {"router": {"intent": "question", "intent_reason": "测试"}}
+            yield {"socrates": {"mentor_reply": "测试回复", "mentor_thinking": ""}}
+            yield {"critic": {"critic_verdict": {"has_hallucination": False, "issues": []}}}
+            yield {"finalize": {"final_output": "测试回复"}}
+
+    monkeypatch.setattr("app.v2.chat.get_agent_graph", lambda: CaptureGraph())
+
+    with client.stream(
+        "POST",
+        "/api/v2/chat/stream",
+        headers={**headers, **auth_origin_headers()},
+        json={"session_id": session.id, "message": "注意力如何聚焦？", "persona": "plain"},
+    ) as response:
+        body = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    assert '"type": "done"' in body
+    assert captured_contexts
+    assert captured_contexts[0]["backend"] == "sag"
+    assert captured_contexts[0]["chunks"]
+
+
 def test_v2_uses_material_context_when_graphrag_is_disabled(monkeypatch) -> None:
     from app.services_v2 import vector_service
 
@@ -446,3 +501,63 @@ def test_v2_uses_material_context_when_graphrag_is_disabled(monkeypatch) -> None
     assert response.status_code == 200
     assert "本轮使用材料片段回退" in body
     assert calls == 0
+
+
+def test_org_manager_can_export_member_conversation_and_feynman_trace() -> None:
+    client = TestClient(app_main.app)
+    manager_headers = auth_headers(client, "v2_export_manager", role="org_manager")
+    manager_id = registered_user_id("v2_export_manager")
+    organization = app_main.store.create_organization(
+        organization_id="org00000000000000000000000000002",
+        code="ORG-EXPORT",
+        name="导出组织",
+        owner_user_id=manager_id,
+        created_at=datetime.now(UTC).isoformat(),
+    )
+    member_headers = auth_headers(client, "v2_export_member", role="org_member")
+    member_id = registered_user_id("v2_export_member")
+    app_main.store.add_organization_member(organization.id, member_id, "org_member", datetime.now(UTC).isoformat())
+    session = make_session(member_id, organization_id=organization.id)
+    node_id = session.active_node_id
+    session.messages = [
+        ChatMessage(role="learner", text="我认为注意力会计算相关性。", node_id=node_id),
+        ChatMessage(role="mentor", text="那权重归一化解决什么问题？", node_id=node_id),
+    ]
+    question = FeynmanQuestion(
+        id="fq-1",
+        label="机制解释",
+        question="解释注意力权重如何产生。",
+        focus="相关性与归一化",
+        difficulty=3,
+        stage="mechanism",
+    )
+    answer = FeynmanAnswer(
+        question_id=question.id,
+        label=question.label,
+        question=question.question,
+        answer="先算查询和键的相关性，再归一化成权重。",
+        stage="mechanism",
+    )
+    session.feynman_questions = {node_id: [question]}
+    session.feynman_answers = {node_id: {answer.question_id: answer}}
+    session.feynman_assessments = {
+        node_id: FeynmanAssessmentRecord(
+            dimension_scores=[
+                DimensionScore(stage="mechanism", label="机制解释", value=82, note="能说明权重产生")
+            ],
+            passed=True,
+        )
+    }
+    app_main.store.save_session(session)
+
+    response = client.get("/api/organizations/current/export", headers=manager_headers)
+
+    assert member_headers
+    assert response.status_code == 200
+    payload = response.json()
+    encoded = json.dumps(payload, ensure_ascii=False)
+    assert "我认为注意力会计算相关性" in encoded
+    assert "解释注意力权重如何产生" in encoded
+    assert payload["organization"]["id"] == organization.id
+    exported_member = next(item for item in payload["members"] if item["user"]["id"] == member_id)
+    assert exported_member["session_traces"][0]["messages"][0]["role"] == "learner"

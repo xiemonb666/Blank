@@ -114,6 +114,9 @@ def socrates_node(state: AgentState) -> dict:
 GraphRAG 知识上下文：
 {format_graph_context(state.get('graph_context', {}))}
 
+动态增派角色策略：
+{state.get('dynamic_guidance') or '（本轮未增派动态角色）'}
+
 学习者最新消息："{state.get('user_message', '')}"
 </untrusted_learning_context>
 

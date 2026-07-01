@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .dynamic import heuristic_dynamic_agents, normalize_dynamic_agents
 from .state import AgentState
 from .utils import llm_chat, parse_json_from_llm, trace
 
@@ -19,15 +20,23 @@ _ROUTER_SYSTEM_PROMPT = """你是一位意图识别专家，负责判断学习�
 3. "chat" —— 闲聊、打招呼、表达情绪、与学习无关的话题。
    特征：问候语（你好、谢谢）、纯情绪表达（太难了、明白了）、无关话题。
 
+可选动态增派角色 dynamic_agents：
+- "planner"：消息较长、目标复杂、需要拆步骤或学习路径。
+- "analyst"：涉及机制、因果、区别、原理或复杂关系。
+- "coach"：学习者表达卡住、焦虑、太难、不懂或需要降低负荷。
+- "memory"：学习者复述、暴露稳定薄弱点、偏好或可沉淀经验。
+
 判定细则：
 - 如果学习者同时有情绪和具体学习问题，优先判为 "question"。
 - 如果学习者主要在给出自己的理解、解释、类比或总结，判为 "explanation"，即使语气不确定。
 - 纯数字、空泛短句、问候、感谢、单纯抱怨且没有具体问题时判为 "chat"。
+- dynamic_agents 可以为空数组；最多选择 4 个，按 planner -> analyst -> coach -> memory 的顺序返回。
 
 你必须严格返回合法 JSON，不要包含 Markdown 代码块标记：
 {
   "intent": "question" | "explanation" | "chat",
-  "reason": "一句话说明判断依据"
+  "reason": "一句话说明判断依据",
+  "dynamic_agents": ["planner" | "analyst" | "coach" | "memory"]
 }"""
 
 
@@ -43,6 +52,7 @@ def router_node(state: AgentState) -> dict:
         return {
             "intent": "chat",
             "intent_reason": "用户输入为空，默认为闲聊",
+            "dynamic_agents": [],
             "agent_trace": [trace("router", "done", "用户输入为空，意图识别为 chat")],
         }
 
@@ -65,19 +75,24 @@ def router_node(state: AgentState) -> dict:
         result = parse_json_from_llm(raw)
         intent = result.get("intent", "question")
         reason = result.get("reason", "未提供判断依据")
+        dynamic_agents = normalize_dynamic_agents(result.get("dynamic_agents"))
         # 安全校验：只允许三种意图
         if intent not in {"question", "explanation", "chat"}:
             intent = "question"
+        if not dynamic_agents:
+            dynamic_agents = heuristic_dynamic_agents(user_message, intent)
     except Exception as exc:
         # Router 失败不应阻断整个流程，降级为最常见意图
         intent = "question"
         reason = f"意图识别异常，降级处理：{exc}"
+        dynamic_agents = heuristic_dynamic_agents(user_message, intent)
 
     return {
         "intent": intent,
         "intent_reason": reason,
+        "dynamic_agents": dynamic_agents,
         "agent_trace": [
             trace("router", "thinking", f"正在分析意图：{user_message[:60]}..."),
-            trace("router", "done", f"识别意图为 [{intent}]，依据：{reason}"),
+            trace("router", "done", f"识别意图为 [{intent}]，增派={','.join(dynamic_agents) or '无'}，依据：{reason}"),
         ],
     }

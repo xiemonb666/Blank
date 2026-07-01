@@ -5,6 +5,8 @@ from collections import Counter, defaultdict
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+import hashlib
+import os
 from threading import Lock
 
 from .models import (
@@ -20,6 +22,8 @@ from .models import (
     OrganizationMemberReport,
     OrganizationMemberSummary,
     OrganizationPublic,
+    OrganizationSessionTrace,
+    OrganizationTraceExportResponse,
     OrganizationTaskAssignment,
     ParseJob,
     ResearchDashboardResponse,
@@ -105,8 +109,11 @@ class SessionStore:
             from psycopg2.pool import ThreadedConnectionPool
         except ImportError as exc:
             raise RuntimeError("PostgreSQL 模式需要安装 psycopg2-binary。请执行 pip install psycopg2-binary") from exc
-        self._pool = ThreadedConnectionPool(minconn=1, maxconn=10, dsn=dsn, cursor_factory=RealDictCursor)
+        minconn = bounded_int_env("BLANK_DB_POOL_MIN_CONN", 1, 1, 20)
+        maxconn = bounded_int_env("BLANK_DB_POOL_MAX_CONN", 20, minconn, 100)
+        self._pool = ThreadedConnectionPool(minconn=minconn, maxconn=maxconn, dsn=dsn, cursor_factory=RealDictCursor)
         self._lock = Lock()
+        self._striped_locks = [Lock() for _ in range(64)]
         self.db_path = None
         self._pg_lock = Lock()
         self._init_db()
@@ -126,6 +133,10 @@ class SessionStore:
     def _sql(self, sql: str) -> str:
         """将 Store 内部占位符 ? 转换为 PostgreSQL 的 %s。"""
         return sql.replace("?", "%s")
+
+    def _lock_for(self, key: str) -> Lock:
+        digest = hashlib.sha256(key.encode("utf-8")).digest()
+        return self._striped_locks[int.from_bytes(digest[:2], "big") % len(self._striped_locks)]
 
     def _init_db(self) -> None:
         with self._connect() as connection:
@@ -276,6 +287,86 @@ class SessionStore:
                         text text not null,
                         foreign key(item_id) references organization_knowledge_items(id),
                         foreign key(organization_id) references organizations(id)
+                    )
+                    """
+                )
+            )
+            connection.execute(
+                self._sql(
+                    """
+                    create table if not exists sag_chunks (
+                        id text primary key,
+                        tenant_id text not null,
+                        user_id text not null default '',
+                        session_id text not null,
+                        source_id text not null,
+                        chunk_index integer not null,
+                        text text not null,
+                        text_hash text not null,
+                        keywords text not null default '[]',
+                        created_at text not null,
+                        unique(tenant_id, session_id, source_id, chunk_index)
+                    )
+                    """
+                )
+            )
+            connection.execute(
+                self._sql(
+                    """
+                    create table if not exists sag_entities (
+                        id text primary key,
+                        tenant_id text not null,
+                        user_id text not null default '',
+                        session_id text not null,
+                        source_id text not null,
+                        name text not null,
+                        type text not null,
+                        description text not null default '',
+                        created_at text not null,
+                        unique(tenant_id, session_id, source_id, name)
+                    )
+                    """
+                )
+            )
+            connection.execute(
+                self._sql(
+                    """
+                    create table if not exists sag_events (
+                        id text primary key,
+                        tenant_id text not null,
+                        user_id text not null default '',
+                        session_id text not null,
+                        source_id text not null,
+                        chunk_index integer not null,
+                        label text not null,
+                        description text not null,
+                        created_at text not null
+                    )
+                    """
+                )
+            )
+            connection.execute(
+                self._sql(
+                    """
+                    create table if not exists sag_chunk_entities (
+                        chunk_id text not null,
+                        entity_id text not null,
+                        primary key(chunk_id, entity_id),
+                        foreign key(chunk_id) references sag_chunks(id) on delete cascade,
+                        foreign key(entity_id) references sag_entities(id) on delete cascade
+                    )
+                    """
+                )
+            )
+            connection.execute(
+                self._sql(
+                    """
+                    create table if not exists sag_event_entities (
+                        event_id text not null,
+                        entity_id text not null,
+                        primary key(event_id, entity_id),
+                        foreign key(event_id) references sag_events(id) on delete cascade,
+                        foreign key(entity_id) references sag_entities(id) on delete cascade
                     )
                     """
                 )
@@ -440,6 +531,9 @@ class SessionStore:
             connection.execute(
                 self._sql("create index if not exists idx_org_knowledge_org on organization_knowledge_items(organization_id, updated_at)")
             )
+            connection.execute(self._sql("create index if not exists idx_sag_chunks_scope on sag_chunks(tenant_id, session_id, source_id, chunk_index)"))
+            connection.execute(self._sql("create index if not exists idx_sag_entities_scope on sag_entities(tenant_id, session_id, source_id, name)"))
+            connection.execute(self._sql("create index if not exists idx_sag_events_scope on sag_events(tenant_id, session_id, source_id, chunk_index)"))
             connection.execute(
                 self._sql("create index if not exists idx_parse_jobs_user_id on parse_jobs(user_id, updated_at)")
             )
@@ -515,7 +609,7 @@ class SessionStore:
     def save_session(self, session: LearningSession) -> LearningSession:
         compact_session_for_storage(session)
         payload = session.model_dump_json()
-        with self._lock, self._connect() as connection:
+        with self._lock_for(session.user_id or session.id), self._connect() as connection:
             connection.execute(
                 self._sql(
                     """
@@ -1194,6 +1288,248 @@ class SessionStore:
         for row in rows:
             lines.append(f"【{row['title']}】{row['text']}")
         return "\n".join(lines)
+
+    def replace_sag_index(self, index) -> None:
+        from .services_v2.sag_service import SagIndex
+
+        if not isinstance(index, SagIndex):
+            raise TypeError("replace_sag_index 需要 SagIndex 实例。")
+        timestamp = datetime.now(UTC).isoformat()
+        with self._lock, self._connect() as connection:
+            self._delete_sag_source(connection, index.tenant_id, index.session_id, index.source_id)
+            entity_ids: dict[str, str] = {}
+            for entity in index.entities:
+                entity_id = stable_sag_id(index.tenant_id, index.session_id, index.source_id, "entity", entity.name)
+                entity_ids[entity.name] = entity_id
+                connection.execute(
+                    self._sql(
+                        """
+                        insert into sag_entities
+                            (id, tenant_id, user_id, session_id, source_id, name, type, description, created_at)
+                        values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        on conflict(tenant_id, session_id, source_id, name) do update set
+                            type = excluded.type,
+                            description = excluded.description
+                        """
+                    ),
+                    (
+                        entity_id,
+                        index.tenant_id,
+                        index.user_id,
+                        index.session_id,
+                        index.source_id,
+                        entity.name,
+                        entity.type,
+                        entity.description,
+                        timestamp,
+                    ),
+                )
+            for chunk in index.chunks:
+                chunk_id = stable_sag_id(index.tenant_id, index.session_id, index.source_id, "chunk", str(chunk.index))
+                connection.execute(
+                    self._sql(
+                        """
+                        insert into sag_chunks
+                            (id, tenant_id, user_id, session_id, source_id, chunk_index, text, text_hash, keywords, created_at)
+                        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """
+                    ),
+                    (
+                        chunk_id,
+                        chunk.tenant_id,
+                        chunk.user_id,
+                        chunk.session_id,
+                        chunk.source_id,
+                        chunk.index,
+                        chunk.text,
+                        chunk.text_hash,
+                        json.dumps(list(chunk.keywords), ensure_ascii=False),
+                        timestamp,
+                    ),
+                )
+                for name in chunk.entity_names:
+                    entity_id = entity_ids.get(name)
+                    if entity_id:
+                        connection.execute(
+                            self._sql("insert into sag_chunk_entities (chunk_id, entity_id) values (?, ?) on conflict do nothing"),
+                            (chunk_id, entity_id),
+                        )
+            for event_index, event in enumerate(index.events):
+                event_id = stable_sag_id(
+                    index.tenant_id,
+                    index.session_id,
+                    index.source_id,
+                    "event",
+                    str(event.chunk_index),
+                    str(event_index),
+                    event.label,
+                    event.description,
+                )
+                connection.execute(
+                    self._sql(
+                        """
+                        insert into sag_events
+                            (id, tenant_id, user_id, session_id, source_id, chunk_index, label, description, created_at)
+                        values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """
+                    ),
+                    (
+                        event_id,
+                        index.tenant_id,
+                        index.user_id,
+                        index.session_id,
+                        index.source_id,
+                        event.chunk_index,
+                        event.label,
+                        event.description,
+                        timestamp,
+                    ),
+                )
+                for name in event.entity_names:
+                    entity_id = entity_ids.get(name)
+                    if entity_id:
+                        connection.execute(
+                            self._sql("insert into sag_event_entities (event_id, entity_id) values (?, ?) on conflict do nothing"),
+                            (event_id, entity_id),
+                        )
+
+    def delete_sag_source(self, tenant_id: str, session_id: str, source_id: str) -> None:
+        with self._lock, self._connect() as connection:
+            self._delete_sag_source(connection, tenant_id, session_id, source_id)
+
+    def _delete_sag_source(self, connection, tenant_id: str, session_id: str, source_id: str) -> None:
+        params = (tenant_id, session_id, source_id)
+        connection.execute(
+            self._sql(
+                """
+                delete from sag_event_entities
+                where event_id in (
+                    select id from sag_events where tenant_id = ? and session_id = ? and source_id = ?
+                )
+                """
+            ),
+            params,
+        )
+        connection.execute(
+            self._sql(
+                """
+                delete from sag_chunk_entities
+                where chunk_id in (
+                    select id from sag_chunks where tenant_id = ? and session_id = ? and source_id = ?
+                )
+                """
+            ),
+            params,
+        )
+        connection.execute(self._sql("delete from sag_events where tenant_id = ? and session_id = ? and source_id = ?"), params)
+        connection.execute(self._sql("delete from sag_entities where tenant_id = ? and session_id = ? and source_id = ?"), params)
+        connection.execute(self._sql("delete from sag_chunks where tenant_id = ? and session_id = ? and source_id = ?"), params)
+
+    def load_sag_index(
+        self,
+        *,
+        tenant_id: str,
+        session_id: str,
+        source_id: str | None = None,
+        user_id: str | None = None,
+    ):
+        from .services_v2.sag_service import SagEntity, SagEvent, SagIndex, SagIndexedChunk
+
+        filters = ["tenant_id = ?", "session_id = ?"]
+        params: list[str] = [tenant_id, session_id]
+        if source_id:
+            filters.append("source_id = ?")
+            params.append(source_id)
+        if user_id:
+            filters.append("user_id = ?")
+            params.append(user_id)
+        where_clause = " and ".join(filters)
+
+        with self._connect() as connection:
+            chunks_rows = connection.execute(
+                self._sql(f"select * from sag_chunks where {where_clause} order by source_id, chunk_index"),
+                tuple(params),
+            ).fetchall()
+            entity_rows = connection.execute(
+                self._sql(f"select * from sag_entities where {where_clause} order by name"),
+                tuple(params),
+            ).fetchall()
+            event_rows = connection.execute(
+                self._sql(f"select * from sag_events where {where_clause} order by source_id, chunk_index, id"),
+                tuple(params),
+            ).fetchall()
+            chunk_entity_rows = connection.execute(
+                self._sql(
+                    f"""
+                    select sag_chunk_entities.chunk_id, sag_entities.name
+                    from sag_chunk_entities
+                    join sag_entities on sag_entities.id = sag_chunk_entities.entity_id
+                    where sag_entities.{where_clause}
+                    """
+                ),
+                tuple(params),
+            ).fetchall()
+            event_entity_rows = connection.execute(
+                self._sql(
+                    f"""
+                    select sag_event_entities.event_id, sag_entities.name
+                    from sag_event_entities
+                    join sag_entities on sag_entities.id = sag_event_entities.entity_id
+                    where sag_entities.{where_clause}
+                    """
+                ),
+                tuple(params),
+            ).fetchall()
+
+        chunk_entities: dict[str, list[str]] = defaultdict(list)
+        for row in chunk_entity_rows:
+            chunk_entities[row["chunk_id"]].append(row["name"])
+        event_entities: dict[str, list[str]] = defaultdict(list)
+        for row in event_entity_rows:
+            event_entities[row["event_id"]].append(row["name"])
+
+        chunks = []
+        for row in chunks_rows:
+            try:
+                keywords = tuple(json.loads(row["keywords"] or "[]"))
+            except json.JSONDecodeError:
+                keywords = ()
+            chunks.append(
+                SagIndexedChunk(
+                    index=int(row["chunk_index"]),
+                    text=row["text"],
+                    text_hash=row["text_hash"],
+                    tenant_id=row["tenant_id"],
+                    user_id=row["user_id"],
+                    session_id=row["session_id"],
+                    source_id=row["source_id"],
+                    keywords=keywords,
+                    entity_names=tuple(chunk_entities.get(row["id"], [])),
+                )
+            )
+        entities = [
+            SagEntity(name=row["name"], type=row["type"], description=row["description"])
+            for row in entity_rows
+        ]
+        events = [
+            SagEvent(
+                label=row["label"],
+                description=row["description"],
+                chunk_index=int(row["chunk_index"]),
+                source_id=row["source_id"],
+                entity_names=tuple(event_entities.get(row["id"], [])),
+            )
+            for row in event_rows
+        ]
+        return SagIndex(
+            tenant_id=tenant_id,
+            user_id=user_id or (chunks[0].user_id if chunks else ""),
+            session_id=session_id,
+            source_id=source_id or (chunks[0].source_id if chunks else ""),
+            chunks=tuple(chunks),
+            entities=tuple(entities),
+            events=tuple(events),
+        )
 
     def create_token(self, token: str, user_id: str, created_at: str, remember_me: bool = False) -> None:
         expires_at = (
@@ -1882,7 +2218,7 @@ class SessionStore:
 
     def record_token_usage(self, record: TokenUsageRecord) -> None:
         total_tokens = record.total_tokens or record.prompt_tokens + record.completion_tokens
-        with self._lock, self._connect() as connection:
+        with self._connect() as connection:
             connection.execute(
                 self._sql(
                     """
@@ -2252,6 +2588,7 @@ class SessionStore:
             )
             for session in sessions
         ]
+        session_traces = [organization_session_trace(session) for session in sessions]
         dimension_scores = [
             score
             for session in sessions
@@ -2262,11 +2599,27 @@ class SessionStore:
         return OrganizationMemberReport(
             user=user,
             sessions=summaries,
+            session_traces=session_traces,
             feynman_answers=self.export_blind_review_answers(organization_id=organization_id, user_id=user_id),
             dimension_scores=dimension_scores,
             mastered_count=int(summary["mastered_count"]),
             node_count=int(summary["node_count"]),
             average_feynman_score=float(summary["average_feynman_score"]),
+        )
+
+    def organization_trace_export(self, organization_id: str) -> OrganizationTraceExportResponse | None:
+        organization = self.get_organization_by_id(organization_id)
+        if organization is None:
+            return None
+        reports: list[OrganizationMemberReport] = []
+        for user_id in self.organization_member_ids(organization_id):
+            report = self.organization_member_report(organization_id, user_id)
+            if report is not None:
+                reports.append(report)
+        return OrganizationTraceExportResponse(
+            generated_at=datetime.now(UTC),
+            organization=organization,
+            members=reports,
         )
 
     def _row_to_user(self, row, total_tokens: int = 0, today_tokens: int = 0) -> UserPublic:
@@ -2471,6 +2824,26 @@ def material_quality_summary(session: LearningSession) -> MaterialQualitySummary
     )
 
 
+def organization_session_trace(session: LearningSession) -> OrganizationSessionTrace:
+    return OrganizationSessionTrace(
+        session=SessionSummary(
+            id=session.id,
+            material_title=session.material_title,
+            active_node_id=session.active_node_id,
+            mastered_count=sum(1 for node in session.nodes if node.status == "mastered"),
+            node_count=len(session.nodes),
+            updated_at=session.updated_at,
+        ),
+        nodes=session.nodes,
+        messages=session.messages,
+        node_profiles=session.node_profiles,
+        feynman_questions=session.feynman_questions,
+        feynman_answers=session.feynman_answers,
+        feynman_followups=session.feynman_followups,
+        feynman_assessments=session.feynman_assessments,
+    )
+
+
 def feynman_distribution(scores: list[int]) -> list[FeynmanDistributionBucket]:
     buckets = [
         ("0-49", 0, 49),
@@ -2575,6 +2948,19 @@ def clamp_score(value: object) -> int:
         return max(0, min(100, int(value)))
     except (TypeError, ValueError):
         return 0
+
+
+def stable_sag_id(*parts: str) -> str:
+    raw = "\x1f".join(str(part) for part in parts)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
+def bounded_int_env(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.getenv(name, "").strip() or default)
+    except ValueError:
+        return default
+    return max(minimum, min(maximum, value))
 
 
 def token_is_expired(expires_at: str) -> bool:

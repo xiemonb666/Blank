@@ -16,6 +16,7 @@ import type {
   OrganizationKnowledgeItem,
   OrganizationMemberReport,
   OrganizationMemberSummary,
+  OrganizationTraceExport,
   OrganizationTaskAssignment,
   OrganizationTaskCreateResponse,
   Persona,
@@ -742,6 +743,10 @@ export function getOrganizationMemberReport(userId: string) {
 
 export function getOrganizationDashboard() {
   return request<OrganizationDashboard>("/api/organizations/current/dashboard");
+}
+
+export function exportOrganizationTrace() {
+  return request<OrganizationTraceExport>("/api/organizations/current/export");
 }
 
 export function createOrganizationTask(payload: {

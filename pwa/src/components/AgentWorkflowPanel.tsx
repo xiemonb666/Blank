@@ -1,4 +1,4 @@
-import { BrainCircuit, Check, ChevronDown, ChevronUp, GitBranch, GraduationCap, Loader2, Network, Radar, Route, ShieldCheck } from "lucide-react";
+import { BrainCircuit, Check, ChevronDown, ChevronUp, GitBranch, GraduationCap, Loader2, Map, Network, Radar, Route, ShieldCheck, Sparkles, Target, Waypoints } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { CSSProperties } from "react";
 import type { AgentWorkflowEvent } from "../hooks/useV2Chat";
@@ -11,7 +11,11 @@ interface AgentWorkflowPanelProps {
 
 const AGENTS = [
   { id: "router", label: "Router", caption: "识别意图", icon: Route },
-  { id: "graphrag", label: "GraphRAG", caption: "召回材料", icon: Network },
+  { id: "planner", label: "Planner", caption: "拆解目标", icon: Map },
+  { id: "analyst", label: "Analyst", caption: "机制分析", icon: Waypoints },
+  { id: "coach", label: "Coach", caption: "降低负荷", icon: Target },
+  { id: "memory", label: "Memory", caption: "沉淀线索", icon: Sparkles },
+  { id: "graphrag", label: "RAG", caption: "召回材料", icon: Network },
   { id: "socrates", label: "Socrates", caption: "引导追问", icon: BrainCircuit },
   { id: "feynman", label: "Feynman", caption: "复述评分", icon: GraduationCap },
   { id: "critic", label: "Critic", caption: "事实核查", icon: ShieldCheck },

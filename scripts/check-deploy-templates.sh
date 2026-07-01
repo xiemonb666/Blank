@@ -121,7 +121,7 @@ require_pattern "${FAIL2BAN_JAIL}" "logpath[[:space:]]*=[[:space:]]*/var/log/bla
 require_pattern "${FAIL2BAN_JAIL}" "maxretry[[:space:]]*=[[:space:]]*8" "fail2ban jail must cap repeated failures"
 require_pattern "${FAIL2BAN_JAIL}" "bantime[[:space:]]*=[[:space:]]*1h" "fail2ban jail must ban attackers"
 
-require_pattern "${COMPOSE_FILE}" "image: postgres:16-alpine" "development compose must provide PostgreSQL"
+require_pattern "${COMPOSE_FILE}" "image: pgvector/pgvector:pg16" "development compose must provide PostgreSQL with pgvector"
 require_pattern "${COMPOSE_FILE}" "image: redis:7-alpine" "development compose must provide Redis"
 require_pattern "${COMPOSE_FILE}" "image: neo4j:5\\.26-community" "development compose must provide Neo4j"
 require_pattern "${COMPOSE_FILE}" "\"127\\.0\\.0\\.1:5432:5432\"" "PostgreSQL development port must bind to loopback"

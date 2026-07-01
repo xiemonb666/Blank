@@ -36,6 +36,21 @@ TEXT_CONTENT_TYPES = {
     "application/xml",
     "application/x-yaml",
 }
+IMAGE_EXTENSIONS = {
+    ".bmp",
+    ".gif",
+    ".jpeg",
+    ".jpg",
+    ".png",
+    ".webp",
+}
+IMAGE_CONTENT_TYPES = {
+    "image/bmp",
+    "image/gif",
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+}
 UNSUPPORTED_BINARY_SIGNATURES: tuple[bytes, ...] = (
     b"MZ",
     b"\x7fELF",
@@ -87,6 +102,10 @@ def extract_material_text(filename: str | None, content_type: str | None, raw: b
     suffix = Path(name.lower()).suffix
     media_type = (content_type or "").split(";")[0].strip().lower()
     is_pdf = suffix == ".pdf" or media_type == "application/pdf" or raw.lstrip().startswith(b"%PDF")
+    is_image = suffix in IMAGE_EXTENSIONS or media_type in IMAGE_CONTENT_TYPES or has_supported_image_signature(raw)
+
+    if is_image:
+        return extract_image_text(name, media_type, raw)
 
     if is_pdf:
         return extract_pdf_text(raw)
@@ -157,6 +176,19 @@ def is_text_content_type(media_type: str) -> bool:
     return media_type.startswith(TEXT_CONTENT_PREFIXES) or media_type in TEXT_CONTENT_TYPES
 
 
+def extract_image_text(filename: str, content_type: str, raw: bytes) -> str:
+    from . import ocr_service
+
+    try:
+        content = ocr_service.extract_image_text(filename, content_type, raw)
+    except ocr_service.OcrServiceError as exc:
+        raise MaterialParseError(str(exc)) from exc
+    normalized = normalize_text(content)
+    if not normalized:
+        raise MaterialParseError("OCR 未能从图片中提取到文本。")
+    return limit_material_text(normalized)
+
+
 def ensure_text_like(raw: bytes, label: str) -> None:
     if has_unsupported_binary_signature(raw) or not looks_like_text_bytes(raw):
         raise MaterialParseError(f"{label} 看起来不是可解析文本，请上传 PDF、TXT 或 Markdown。")
@@ -165,6 +197,18 @@ def ensure_text_like(raw: bytes, label: str) -> None:
 def has_unsupported_binary_signature(raw: bytes) -> bool:
     sample = raw[:32]
     return any(sample.startswith(signature) for signature in UNSUPPORTED_BINARY_SIGNATURES)
+
+
+def has_supported_image_signature(raw: bytes) -> bool:
+    sample = raw[:16]
+    return (
+        sample.startswith(b"\x89PNG\r\n\x1a\n")
+        or sample.startswith(b"\xff\xd8\xff")
+        or sample.startswith(b"GIF87a")
+        or sample.startswith(b"GIF89a")
+        or sample.startswith(b"RIFF") and raw[8:12] == b"WEBP"
+        or sample.startswith(b"BM")
+    )
 
 
 def looks_like_text_bytes(raw: bytes) -> bool:

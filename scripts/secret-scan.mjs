@@ -15,6 +15,8 @@ const excludedDirs = new Set([
   "dist",
   "__pycache__",
   ".venv",
+  ".git",
+  ".tools",
   "data",
 ]);
 

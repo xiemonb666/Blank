@@ -373,6 +373,7 @@ export interface OrganizationKnowledgeItem {
 export interface OrganizationMemberReport {
   user: User;
   sessions: import("./api").SessionSummary[];
+  session_traces: OrganizationSessionTrace[];
   feynman_answers: ResearchBlindReviewAnswer[];
   dimension_scores: DimensionScore[];
   mastered_count: number;
@@ -380,8 +381,25 @@ export interface OrganizationMemberReport {
   average_feynman_score: number;
 }
 
+export interface OrganizationSessionTrace {
+  session: import("./api").SessionSummary;
+  nodes: KnowledgeNode[];
+  messages: Message[];
+  node_profiles: Record<string, NodeLearningProfile>;
+  feynman_questions: Record<string, FeynmanQuestion[]>;
+  feynman_answers: Record<string, Record<string, FeynmanAnswer>>;
+  feynman_followups: Record<string, Record<string, FeynmanFollowUpState>>;
+  feynman_assessments: Record<string, FeynmanAssessmentRecord>;
+}
+
 export interface OrganizationDashboard {
   organization: Organization;
   dashboard: ResearchDashboard;
   members: OrganizationMemberSummary[];
+}
+
+export interface OrganizationTraceExport {
+  generated_at: string;
+  organization: Organization;
+  members: OrganizationMemberReport[];
 }

@@ -2,7 +2,7 @@ name: blank-learning
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     container_name: blank-postgres
     restart: unless-stopped
     environment:
