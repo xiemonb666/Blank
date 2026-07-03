@@ -17,7 +17,7 @@ from app import auth as auth_module
 from app import main as app_main
 from app import secrets as secrets_module
 from app.materials import MAX_MATERIAL_CHARS, decode_text, extract_pdf_text
-from app.models import ChatMessage, KnowledgeNode, LearningSession, MemoryEntry
+from app.models import ChatMessage, FeynmanQuestion, KnowledgeNode, LearningSession, MemoryEntry
 from app.services import (
     create_session,
     call_openai_compatible_chat,
@@ -4046,6 +4046,129 @@ def test_feynman_questions_and_grading_call_model_per_node() -> None:
         model_server.stop()
 
 
+def test_topic_feynman_questions_do_not_reference_uploaded_material() -> None:
+    topic_questions = {
+        "questions": [
+            {
+                "id": "q1",
+                "label": "核心定义",
+                "question": "根据材料说明这个节点解决什么问题？",
+                "focus": "根据材料定位定义",
+                "difficulty": 1,
+                "stage": "warmup",
+                "follow_up_of": None,
+            },
+            {
+                "id": "q2",
+                "label": "关键机制",
+                "question": "结合原文解释它如何推进结果。",
+                "focus": "原文里的机制",
+                "difficulty": 2,
+                "stage": "mechanism",
+                "follow_up_of": None,
+            },
+            {
+                "id": "q3",
+                "label": "迁移应用",
+                "question": "上传文件里这个概念能迁移到什么场景？",
+                "focus": "上传文件迁移",
+                "difficulty": 3,
+                "stage": "transfer",
+                "follow_up_of": None,
+            },
+            {
+                "id": "q4",
+                "label": "边界条件",
+                "question": "讲义中有哪些容易误用的边界？",
+                "focus": "讲义边界",
+                "difficulty": 4,
+                "stage": "correction",
+                "follow_up_of": None,
+            },
+        ]
+    }
+    model_server = FakeModelServer(response=fake_model_response(SPLIT_NODES, topic_questions))
+    model_server.start()
+    client = TestClient(app_main.app)
+    headers = auth_headers(client, "tester_topic_feynman", role="admin")
+    configure_fake_model(client, headers, model_server)
+    try:
+        created = client.post(
+            "/api/sessions",
+            headers=headers,
+            json={
+                "title": "想学：微积分",
+                "content": "用户想学习的主题：微积分\n从变化率和累积量开始学习。",
+                "material_origin": "topic",
+            },
+        )
+        assert created.status_code == 200
+        session = created.json()["session"]
+        assert session["material_origin"] == "topic"
+
+        question_response = client.post(
+            f"/api/sessions/{session['id']}/feynman/questions",
+            headers=headers,
+            json={"node_id": session["active_node_id"]},
+        )
+        assert question_response.status_code == 200
+        question_text = json.dumps(question_response.json()["questions"], ensure_ascii=False)
+        for forbidden in ("根据材料", "原文", "上传文件", "讲义"):
+            assert forbidden not in question_text
+        prompt = model_server.requests[-1]["body"]["messages"][-1]["content"]
+        assert "会话来源：topic" in prompt
+        assert "禁止出现“根据材料”" in prompt
+    finally:
+        model_server.stop()
+
+
+def test_prewarm_learning_assets_does_not_create_starter_messages(monkeypatch) -> None:
+    import app.services as services_module
+
+    node = KnowledgeNode(
+        id="node-a",
+        title="瞬时速度",
+        summary="描述某一瞬间变化有多快。",
+        evidence="速度可能时快时慢。",
+        complexity=1,
+        status="active",
+        weight=1.0,
+        x=20.0,
+        y=30.0,
+    )
+    session = LearningSession(
+        id="0123456789abcdef0123456789abcdef",
+        user_id="user-a",
+        material_title="想学：微积分",
+        material_origin="topic",
+        material_context="用户想学习微积分里的瞬时速度。",
+        nodes=[node],
+        active_node_id=node.id,
+        messages=[],
+    )
+    question = FeynmanQuestion(
+        id="q1",
+        label="核心判断",
+        question="围绕当前节点说说瞬时速度解决什么问题？",
+        focus="瞬时速度目标",
+        difficulty=1,
+        stage="warmup",
+    )
+    monkeypatch.setattr(services_module, "generate_feynman_questions", lambda *_args, **_kwargs: [question])
+
+    stats = services_module.prewarm_learning_assets(
+        session,
+        {"provider": "openai", "base_url": "http://127.0.0.1:1/v1", "api_key": "sk-test", "model": "unit"},
+        node_limit=1,
+        concurrency=1,
+    )
+
+    assert stats["questions"] == 1
+    assert stats["starters"] == 0
+    assert session.messages == []
+    assert session.feynman_questions[node.id] == [question]
+
+
 def test_feynman_follow_up_calls_model_and_returns_question() -> None:
     follow_up = {
         "needed": True,
@@ -4461,6 +4584,40 @@ def test_openai_temperature_one_error_retries_with_compatible_temperature(monkey
         assert len(model_server.requests) == 2
         assert model_server.requests[0]["body"]["temperature"] == 0.2
         assert model_server.requests[1]["body"]["temperature"] == 1
+    finally:
+        model_server.stop()
+
+
+def test_openai_reasoning_effort_error_retries_without_reasoning() -> None:
+    model_server = FakeModelServer(
+        responses=[
+            (
+                400,
+                {
+                    "error": {
+                        "message": "unknown parameter: reasoning_effort",
+                        "type": "invalid_request_error",
+                    }
+                },
+            ),
+            (200, {"choices": [model_choice("reasoning 降级成功")]}),
+        ]
+    )
+    model_server.start()
+    try:
+        content = call_openai_compatible_chat(
+            base_url=model_server.base_url,
+            api_key="sk-reasoning-retry",
+            model="reasoning-test-model",
+            messages=[{"role": "user", "content": "hello"}],
+            temperature=0.2,
+            reasoning_effort="medium",
+        )
+
+        assert content == "reasoning 降级成功"
+        assert len(model_server.requests) == 2
+        assert model_server.requests[0]["body"]["reasoning_effort"] == "medium"
+        assert "reasoning_effort" not in model_server.requests[1]["body"]
     finally:
         model_server.stop()
 

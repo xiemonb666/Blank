@@ -4,6 +4,7 @@ import type {
   KnowledgeNode,
   MemoryEntry,
   Message,
+  NodePrimer,
   NodeLearningProfile,
   Persona,
   TutorSettings,
@@ -21,6 +22,7 @@ interface UseLearningSessionOptions {
   initialDraftsByNodeId?: Record<string, string>;
   initialMemories?: MemoryEntry[];
   initialNodeProfiles: Record<string, NodeLearningProfile>;
+  initialNodePrimers?: Record<string, NodePrimer>;
 }
 
 function useLearningSession({
@@ -35,6 +37,7 @@ function useLearningSession({
   initialDraftsByNodeId = {},
   initialMemories = [],
   initialNodeProfiles,
+  initialNodePrimers = {},
 }: UseLearningSessionOptions) {
   const [persona, setPersona] = useState<Persona>(initialPersona);
   const [tutorSettings, setTutorSettings] = useState<TutorSettings>(initialTutorSettings);
@@ -47,6 +50,7 @@ function useLearningSession({
   const [draftsByNodeId, setDraftsByNodeId] = useState<Record<string, string>>(initialDraftsByNodeId);
   const [memories, setMemories] = useState<MemoryEntry[]>(initialMemories);
   const [nodeProfiles, setNodeProfiles] = useState<Record<string, NodeLearningProfile>>(initialNodeProfiles);
+  const [nodePrimers, setNodePrimers] = useState<Record<string, NodePrimer>>(initialNodePrimers);
 
   const activeNode = useMemo(() => nodes.find((node) => node.id === activeNodeId) ?? null, [activeNodeId, nodes]);
   const activeProfile = activeNode ? nodeProfiles[activeNode.id] ?? defaultNodeProfile(activeNode) : null;
@@ -84,6 +88,8 @@ function useLearningSession({
     setMemories,
     nodeProfiles,
     setNodeProfiles,
+    nodePrimers,
+    setNodePrimers,
     activeNode,
     activeProfile,
     activeNodeMessages,

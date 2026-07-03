@@ -23,9 +23,10 @@ class AgentState(TypedDict):
     memories: list[dict[str, str]]  # 长期记忆条目
     graph_context: dict  # GraphRAG 混合检索结果 {"chunks": [...], "subgraphs": [...]}
     ai_config: dict[str, str] | None  # {base_url, api_key, model}
+    stream_generation: bool
 
     # ========== Router 输出 ==========
-    intent: str  # "question" | "explanation" | "chat"
+    intent: str  # "question" | "answer" | "explanation" | "chat"
     intent_reason: str
     dynamic_agents: list[str]  # 动态增派角色，如 planner/analyst/coach/memory
     dynamic_guidance: str
@@ -33,6 +34,7 @@ class AgentState(TypedDict):
     # ========== Socrates 输出 ==========
     mentor_reply: str
     mentor_thinking: str
+    stream_response: bool
 
     # ========== Feynman 输出 ==========
     feynman_score: dict  # 五维度评分 + 总体评价

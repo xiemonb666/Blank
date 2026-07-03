@@ -380,6 +380,7 @@ class SessionStore:
                         base_url text not null,
                         api_key text not null,
                         model text not null,
+                        reasoning_effort text not null default 'medium',
                         is_active integer not null,
                         created_at text not null,
                         updated_at text not null
@@ -416,6 +417,7 @@ class SessionStore:
                         user_id text not null,
                         title text not null,
                         content text not null,
+                        material_origin text not null default 'text',
                         status text not null,
                         progress integer not null,
                         message text not null,
@@ -495,6 +497,8 @@ class SessionStore:
             self._ensure_column(connection, "users", "default_credentials_seeded", "integer not null default 0")
             self._ensure_column(connection, "auth_tokens", "last_reauth_at", "text not null default ''")
             self._ensure_column(connection, "auth_tokens", "expires_at", "text not null default ''")
+            self._ensure_column(connection, "parse_jobs", "material_origin", "text not null default 'text'")
+            self._ensure_column(connection, "api_configs", "reasoning_effort", "text not null default 'medium'")
             connection.execute(
                 self._sql("update auth_tokens set last_reauth_at = created_at where last_reauth_at = ''")
             )
@@ -712,6 +716,7 @@ class SessionStore:
         payload.setdefault("organization_id", row_get("organization_id"))
         payload.setdefault("task_id", row_get("task_id"))
         payload.setdefault("visibility", row_get("visibility") or "personal")
+        payload.setdefault("material_origin", "topic" if str(payload.get("material_title") or "").startswith("想学：") else "text")
         return LearningSession.model_validate(payload)
 
     def _prune_sessions_for_user(self, connection, user_id: str, keep_session_id: str) -> None:
@@ -1649,14 +1654,15 @@ class SessionStore:
         title: str,
         content: str,
         created_at: str,
+        material_origin: str = "text",
     ) -> ParseJob:
         with self._lock, self._connect() as connection:
             connection.execute(
                 self._sql(
                     """
                     insert into parse_jobs
-                        (id, user_id, title, content, status, progress, message, session_id, error, created_at, updated_at)
-                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        (id, user_id, title, content, material_origin, status, progress, message, session_id, error, created_at, updated_at)
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """
                 ),
                 (
@@ -1664,6 +1670,7 @@ class SessionStore:
                     user_id,
                     title,
                     content,
+                    normalize_material_origin(material_origin),
                     "queued",
                     5,
                     "已加入解析队列",
@@ -1686,6 +1693,7 @@ class SessionStore:
         content: str,
         created_at: str,
         min_submit_interval_seconds: int,
+        material_origin: str = "text",
     ) -> ParseJob:
         with self._lock, self._connect() as connection:
             self._release_stale_parse_jobs(connection, user_id, created_at)
@@ -1711,8 +1719,8 @@ class SessionStore:
                 self._sql(
                     """
                     insert into parse_jobs
-                        (id, user_id, title, content, status, progress, message, session_id, error, created_at, updated_at)
-                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        (id, user_id, title, content, material_origin, status, progress, message, session_id, error, created_at, updated_at)
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """
                 ),
                 (
@@ -1720,6 +1728,7 @@ class SessionStore:
                     user_id,
                     title,
                     content,
+                    normalize_material_origin(material_origin),
                     "queued",
                     5,
                     "已加入解析队列",
@@ -1784,15 +1793,15 @@ class SessionStore:
             return None
         return self._row_to_parse_job(row)
 
-    def get_parse_job_content(self, job_id: str) -> tuple[str, str, str] | None:
+    def get_parse_job_content(self, job_id: str) -> tuple[str, str, str, str] | None:
         with self._connect() as connection:
             row = connection.execute(
-                self._sql("select user_id, title, content from parse_jobs where id = ?"),
+                self._sql("select user_id, title, content, material_origin from parse_jobs where id = ?"),
                 (job_id,),
             ).fetchone()
         if row is None:
             return None
-        return row["user_id"], row["title"], row["content"]
+        return row["user_id"], row["title"], row["content"], normalize_material_origin(row["material_origin"])
 
     def clear_parse_job_content(self, job_id: str) -> None:
         with self._lock, self._connect() as connection:
@@ -1887,6 +1896,7 @@ class SessionStore:
         is_active: bool,
         created_at: str,
         updated_at: str,
+        reasoning_effort: str = "medium",
     ) -> ApiConfig:
         normalized_provider, normalized_base_url, normalized_api_key, normalized_model = validate_api_config_parts(
             provider,
@@ -1906,13 +1916,14 @@ class SessionStore:
             connection.execute(
                 self._sql(
                     """
-                    insert into api_configs (id, provider, base_url, api_key, model, is_active, created_at, updated_at)
-                    values (?, ?, ?, ?, ?, ?, ?, ?)
+                    insert into api_configs (id, provider, base_url, api_key, model, reasoning_effort, is_active, created_at, updated_at)
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     on conflict(id) do update set
                         provider = excluded.provider,
                         base_url = excluded.base_url,
                         api_key = excluded.api_key,
                         model = excluded.model,
+                        reasoning_effort = excluded.reasoning_effort,
                         is_active = excluded.is_active,
                         updated_at = excluded.updated_at
                     """
@@ -1923,6 +1934,7 @@ class SessionStore:
                     normalized_base_url,
                     stored_api_key,
                     normalized_model,
+                    normalize_reasoning_effort(reasoning_effort),
                     int(is_active),
                     actual_created_at,
                     updated_at,
@@ -1986,6 +1998,7 @@ class SessionStore:
             "base_url": base_url,
             "api_key": api_key,
             "model": model,
+            "reasoning_effort": normalize_reasoning_effort(row["reasoning_effort"]),
         }
 
     def delete_api_config(self, config_id: str) -> bool:
@@ -2710,6 +2723,7 @@ class SessionStore:
             base_url=row["base_url"],
             api_key_masked=mask_secret(decrypt_secret(row["api_key"], self.db_path or "")),
             model=row["model"],
+            reasoning_effort=normalize_reasoning_effort(row["reasoning_effort"]),
             is_active=bool(row["is_active"]),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
@@ -2795,6 +2809,20 @@ def safe_api_provider_for_display(provider: str) -> str:
 def safe_speech_provider_for_display(provider: str) -> str:
     compact = "".join(char if char.isprintable() and not char.isspace() else "?" for char in str(provider))
     return compact[:80] or "unknown"
+
+
+def normalize_material_origin(value: object) -> str:
+    origin = str(value or "text").strip().lower()
+    if origin in {"upload", "topic", "text"}:
+        return origin
+    return "text"
+
+
+def normalize_reasoning_effort(value: object) -> str:
+    effort = str(value or "medium").strip().lower()
+    if effort in {"off", "low", "medium", "high"}:
+        return effort
+    return "medium"
 
 
 def compact_session_for_storage(session: LearningSession) -> None:

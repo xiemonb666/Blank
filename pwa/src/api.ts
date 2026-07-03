@@ -9,7 +9,9 @@ import type {
   FeynmanQuestion,
   KnowledgeNode,
   MemoryEntry,
+  MaterialOrigin,
   Message,
+  NodePrimer,
   NodeLearningProfile,
   Organization,
   OrganizationDashboard,
@@ -81,6 +83,7 @@ export interface LearningSession {
   task_id?: string | null;
   visibility?: "personal" | "organization_task_template" | "organization_member";
   material_title: string;
+  material_origin: MaterialOrigin;
   nodes: KnowledgeNode[];
   active_node_id: string;
   persona: Persona;
@@ -90,6 +93,7 @@ export interface LearningSession {
   message_counts: Record<string, number>;
   memories: MemoryEntry[];
   node_profiles: Record<string, NodeLearningProfile>;
+  node_primers: Record<string, NodePrimer>;
   feynman_questions: Record<string, FeynmanQuestion[]>;
   feynman_answers: Record<string, Record<string, FeynmanAnswer>>;
   feynman_followups?: Record<string, Record<string, FeynmanFollowUpState>>;
@@ -166,6 +170,7 @@ export type ChatStreamEvent =
 export type V2ChatStreamEvent =
   | { type: "status"; agent: string; message: string; detail?: string }
   | { type: "thought"; content: string }
+  | { type: "thought_delta"; content: string }
   | { type: "message"; content: string }
   | { type: "feynman_result"; data: unknown; feedback?: string }
   | { type: "done"; messages?: Message[]; node_profiles?: Record<string, NodeLearningProfile> }
@@ -206,6 +211,11 @@ export interface FeynmanAnswerSaveResponse {
   answers: Record<string, FeynmanAnswer>;
 }
 
+export interface NodePrimerResponse {
+  primer: NodePrimer;
+  reused: boolean;
+}
+
 export interface AuthResponse {
   user: User;
   security_notice?: User["security_notice"];
@@ -216,6 +226,7 @@ export interface ApiConfigInput {
   base_url: string;
   api_key: string;
   model: string;
+  reasoning_effort: "off" | "low" | "medium" | "high";
   is_active: boolean;
 }
 
@@ -366,22 +377,22 @@ export function updateMyAccount(payload: { current_password: string; username?: 
   );
 }
 
-export function createSession(title: string, content: string) {
+export function createSession(title: string, content: string, materialOrigin: MaterialOrigin = "text") {
   return request<{ session: LearningSession }>(
     "/api/sessions",
     {
       method: "POST",
-      body: JSON.stringify({ title, content }),
+      body: JSON.stringify({ title, content, material_origin: materialOrigin }),
     },
   );
 }
 
-export function createParseJob(title: string, content: string) {
+export function createParseJob(title: string, content: string, materialOrigin: MaterialOrigin = "text") {
   return request<ParseJobResponse>(
     "/api/parse-jobs",
     {
       method: "POST",
-      body: JSON.stringify({ title, content }),
+      body: JSON.stringify({ title, content, material_origin: materialOrigin }),
     },
   );
 }
@@ -429,6 +440,16 @@ export function selectNode(sessionId: string, nodeId: string) {
   );
 }
 
+export function getNodePrimer(sessionId: string, nodeId: string) {
+  return request<NodePrimerResponse>(
+    `/api/sessions/${sessionId}/node-primer`,
+    {
+      method: "POST",
+      body: JSON.stringify({ node_id: nodeId }),
+    },
+  );
+}
+
 export function updateSessionPersona(sessionId: string, persona: Persona) {
   return request<LearningSession>(
     `/api/sessions/${sessionId}/persona`,
@@ -456,6 +477,7 @@ export function sendChatMessage(
   message: string,
   failureCount: number,
   options: { preservePersona?: boolean; confusionEvent?: boolean; starterEvent?: boolean } = {},
+  tutorSettings?: TutorSettings,
 ) {
   return request<ChatResponse>(
     `/api/sessions/${sessionId}/chat`,
@@ -469,6 +491,7 @@ export function sendChatMessage(
         preserve_persona: options.preservePersona ?? false,
         confusion_event: options.confusionEvent ?? false,
         starter_event: options.starterEvent ?? false,
+        tutor_settings: tutorSettings,
       }),
     },
   );
@@ -482,6 +505,7 @@ export async function streamChatMessage(
   failureCount: number,
   onEvent: (event: ChatStreamEvent) => void,
   options: { preservePersona?: boolean; confusionEvent?: boolean; starterEvent?: boolean } = {},
+  tutorSettings?: TutorSettings,
 ) {
   const response = await fetch(`${API_BASE}/api/sessions/${sessionId}/chat/stream`, {
     method: "POST",
@@ -498,6 +522,7 @@ export async function streamChatMessage(
       preserve_persona: options.preservePersona ?? false,
       confusion_event: options.confusionEvent ?? false,
       starter_event: options.starterEvent ?? false,
+      tutor_settings: tutorSettings,
     }),
   });
 

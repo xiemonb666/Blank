@@ -78,6 +78,7 @@ import {
   getOrganizationDashboard,
   getOrganizationMemberReport,
   getMe,
+  getNodePrimer,
   getResearchDashboard,
   importResearchExperiments,
   getSession,
@@ -117,6 +118,7 @@ import type {
   FeynmanAssessmentRecord,
   FeynmanQuestion,
   KnowledgeNode,
+  NodePrimer,
   Persona,
   Organization,
   OrganizationDashboard,
@@ -239,6 +241,7 @@ function App() {
     base_url: "https://api.openai.com/v1",
     api_key: "",
     model: UI_REVIEW_STAGE === "admin" ? "gpt-4.1-mini" : "",
+    reasoning_effort: "medium",
     is_active: true,
   });
   const [speechConfigForm, setSpeechConfigForm] = useState<SpeechConfigInput>({
@@ -254,8 +257,10 @@ function App() {
     response_format: "",
   });
   const [lastChatSubmitAt, setLastChatSubmitAt] = useState(0);
+  const [primerLoadingByNodeId, setPrimerLoadingByNodeId] = useState<Record<string, boolean>>({});
   const lastChatSubmitAtRef = useRef(0);
   const introRequestedRef = useRef<Set<string>>(new Set());
+  const primerRequestedRef = useRef<Set<string>>(new Set());
   const speechAudioRef = useRef<HTMLAudioElement | null>(null);
   const speechUrlRef = useRef<string>("");
 
@@ -291,6 +296,8 @@ function App() {
     setMemories,
     nodeProfiles,
     setNodeProfiles,
+    nodePrimers,
+    setNodePrimers,
     activeNode,
     activeProfile,
     activeNodeMessages,
@@ -390,17 +397,24 @@ function App() {
   useEffect(() => {
     if (UI_REVIEW_STAGE) return;
     if (stage !== "flow" || !sessionId || !activeNode) return;
-    if (isBusy || isParsing || v2Chat.isStreaming) return;
+    if (isParsing) return;
     if (activeNodeMessages.length > 0) return;
     const key = `${sessionId}:${activeNode.id}`;
-    if (introRequestedRef.current.has(key)) return;
-    introRequestedRef.current.add(key);
-    void sendLearningMessage(INITIAL_TUTOR_PROMPT, {
-      preservePersona: true,
-      starterEvent: true,
-      skipCooldown: true,
-    });
-  }, [stage, sessionId, activeNode?.id, activeNodeMessages.length, isBusy, isParsing, v2Chat.isStreaming]);
+    if (nodePrimers[activeNode.id] || primerRequestedRef.current.has(key)) return;
+    primerRequestedRef.current.add(key);
+    setPrimerLoadingByNodeId((current) => ({ ...current, [activeNode.id]: true }));
+    void getNodePrimer(sessionId, activeNode.id)
+      .then((response) => {
+        setNodePrimers((current) => ({ ...current, [activeNode.id]: response.primer }));
+      })
+      .catch((caught) => {
+        primerRequestedRef.current.delete(key);
+        setError(caught instanceof Error ? caught.message : "预习卡片生成失败，请稍后重试。");
+      })
+      .finally(() => {
+        setPrimerLoadingByNodeId((current) => ({ ...current, [activeNode.id]: false }));
+      });
+  }, [stage, sessionId, activeNode?.id, activeNodeMessages.length, isParsing, nodePrimers, setNodePrimers]);
 
   if (!token || !user) {
     return (
@@ -479,7 +493,7 @@ function App() {
     ].join("\n");
 
     await runBusy(async () => {
-      const response = await createParseJob(title, content);
+      const response = await createParseJob(title, content, "topic");
       beginParseJob(response.job);
       setTopicDraft("");
     });
@@ -528,6 +542,22 @@ function App() {
         failureCountOverride: Math.max(failureCount, 2),
       },
     );
+  }
+
+  async function startPrimerPractice() {
+    if (!sessionId || !activeNode) return;
+    const key = `${sessionId}:${activeNode.id}`;
+    if (introRequestedRef.current.has(key) || activeNodeMessages.length > 0) return;
+    introRequestedRef.current.add(key);
+    try {
+      await sendLearningMessage(INITIAL_TUTOR_PROMPT, {
+        preservePersona: true,
+        starterEvent: true,
+        skipCooldown: true,
+      });
+    } catch {
+      introRequestedRef.current.delete(key);
+    }
   }
 
   async function sendLearningMessage(
@@ -582,7 +612,7 @@ function App() {
       await runBusy(async () => {
         let streamError = "";
         try {
-          await v2Chat.send(sessionId, activeNode.id, text, persona, {
+          await v2Chat.send(sessionId, activeNode.id, text, persona, tutorSettings, {
             confusionEvent: options.confusionEvent,
             starterEvent: options.starterEvent,
             onMessageDelta: (delta) => {
@@ -700,6 +730,7 @@ function App() {
             confusionEvent: options.confusionEvent,
             starterEvent: options.starterEvent,
           },
+          tutorSettings,
         );
         if (streamError) {
           throw new Error(streamError);
@@ -878,6 +909,7 @@ function App() {
     setFeynmanAssessmentsByNodeId({});
     setMemories([]);
     setNodeProfiles({});
+    setNodePrimers({});
     feynman.clearAll();
     resetFeynmanState();
     setDraftsByNodeId({});
@@ -887,6 +919,9 @@ function App() {
     setFailureCount(0);
     setDowngradedOverride(false);
     setTopicDraft("");
+    introRequestedRef.current.clear();
+    primerRequestedRef.current.clear();
+    setPrimerLoadingByNodeId({});
     setError("");
   }
 
@@ -906,6 +941,7 @@ function App() {
     hydrateActiveNodeThread(session);
     setMemories(session.memories);
     setNodeProfiles(resolveNodeProfiles(session));
+    setNodePrimers(session.node_primers ?? {});
     parseJob.setParseProgress(session.parse_progress);
     feynman.hydrateFromSession(session.active_node_id, session.feynman_questions ?? {}, session.feynman_answers ?? {});
     setFeynmanAssessmentsByNodeId(session.feynman_assessments ?? {});
@@ -1647,6 +1683,8 @@ function App() {
           profile={activeProfile}
           persona={persona}
           tutorSettings={tutorSettings}
+          primer={nodePrimers[activeNode.id] ?? null}
+          isPrimerLoading={Boolean(primerLoadingByNodeId[activeNode.id])}
           onPersonaChange={changePersona}
           onTutorSettingsChange={changeTutorSettings}
           onDraftChange={(value) =>
@@ -1655,6 +1693,7 @@ function App() {
           onSubmit={handleComposerSubmit}
           onSend={submitMessage}
           onConfuse={handleConfuse}
+          onStartPractice={startPrimerPractice}
           onFeynman={enterFeynmanStage}
           onSelectNode={selectNode}
           isBusy={isBusy}
@@ -1807,6 +1846,7 @@ function App() {
               base_url: config.base_url,
               api_key: "",
               model: config.model,
+              reasoning_effort: config.reasoning_effort,
               is_active: config.is_active,
             });
           }}

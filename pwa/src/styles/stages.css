@@ -19,6 +19,68 @@
   color: var(--paper);
 }
 
+.primer-panel {
+  display: grid;
+  gap: 12px;
+  width: min(760px, 100%);
+  border: 1px solid rgba(17, 17, 17, 0.72);
+  background: var(--paper-soft);
+  padding: 14px;
+}
+
+.primer-heading,
+.primer-action,
+.primer-keywords {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.primer-heading span,
+.primer-example span {
+  font-size: var(--text-micro);
+  font-weight: 900;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.primer-heading strong {
+  overflow-wrap: anywhere;
+}
+
+.primer-panel p {
+  margin: 0;
+  line-height: var(--leading-reading);
+}
+
+.primer-example {
+  display: grid;
+  gap: 6px;
+  border-block: 1px solid rgba(17, 17, 17, 0.18);
+  padding-block: 10px;
+}
+
+.primer-keywords {
+  flex-wrap: wrap;
+}
+
+.primer-keywords b {
+  border: 1px solid rgba(17, 17, 17, 0.62);
+  padding: 4px 8px;
+  font-size: var(--text-micro);
+}
+
+.primer-action {
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.primer-action span {
+  line-height: var(--leading-reading);
+}
+
 .message-kicker {
   display: flex;
   align-items: center;
@@ -2734,6 +2796,12 @@
   }
 
   .flow-mission b {
+    border-left: 0;
+    border-top: 1px solid rgba(17, 17, 17, 0.45);
+    padding: 10px 0 0;
+  }
+
+  .flow-current-mode {
     border-left: 0;
     border-top: 1px solid rgba(17, 17, 17, 0.45);
     padding: 10px 0 0;

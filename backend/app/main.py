@@ -42,6 +42,7 @@ from .models import (
     LearningSession,
     LearningSessionPublic,
     LoginRequest,
+    NodePrimerResponse,
     NodeSelectRequest,
     OrganizationDashboardResponse,
     OrganizationKnowledgeItem,
@@ -95,6 +96,7 @@ from .services import (
     find_node,
     generate_feynman_follow_up,
     generate_feynman_questions,
+    generate_node_primer,
     messages_for_node,
     prewarm_learning_assets,
     save_feynman_answer,
@@ -1066,6 +1068,7 @@ def create_learning_session(
             user.id,
             ai_config,
             organization_id=user.organization_id if user.role in {"org_manager", "org_member"} else None,
+            material_origin=payload.material_origin,
         )
     except AiSplitError as exc:
         raise HTTPException(status_code=502, detail=redact_secret_text(str(exc))) from exc
@@ -1079,7 +1082,7 @@ def create_parse_job(
     payload: SessionCreateRequest,
     user: UserPublic = Depends(require_user),
 ) -> ParseJobCreateResponse:
-    return start_parse_job(payload.title, payload.content, user)
+    return start_parse_job(payload.title, payload.content, user, payload.material_origin)
 
 
 @app.post("/api/parse-jobs/upload", response_model=ParseJobCreateResponse)
@@ -1109,10 +1112,10 @@ async def create_upload_parse_job(
         chars=len(content),
         preview=sanitize_debug_text(content, limit=1200),
     )
-    return start_parse_job(title, content, user)
+    return start_parse_job(title, content, user, "upload")
 
 
-def start_parse_job(title: str, content: str, user: UserPublic) -> ParseJobCreateResponse:
+def start_parse_job(title: str, content: str, user: UserPublic, material_origin: str = "text") -> ParseJobCreateResponse:
     enforce_rate_limit(f"parse-job:{user.id}", SESSION_CREATE_RATE_LIMIT)
 
     timestamp = now_iso()
@@ -1122,6 +1125,7 @@ def start_parse_job(title: str, content: str, user: UserPublic) -> ParseJobCreat
             user_id=user.id,
             title=title,
             content=content,
+            material_origin=material_origin,
             created_at=timestamp,
             min_submit_interval_seconds=PARSE_SUBMIT_INTERVAL_SECONDS,
         )
@@ -1290,6 +1294,23 @@ def select_session_node(
     return public_session_for_user(updated, user)
 
 
+@app.post("/api/sessions/{session_id}/node-primer", response_model=NodePrimerResponse)
+def create_node_primer(
+    session_id: str,
+    payload: NodeSelectRequest,
+    user: UserPublic = Depends(require_user),
+) -> NodePrimerResponse:
+    session_id = require_resource_id(session_id, "会话")
+    session = require_session(session_id, user)
+    try:
+        primer, reused = generate_node_primer(session, payload.node_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not reused:
+        store.save_session(session)
+    return NodePrimerResponse(primer=primer, reused=reused)
+
+
 @app.patch("/api/sessions/{session_id}/persona", response_model=LearningSessionPublic)
 def update_session_persona(
     session_id: str,
@@ -1342,6 +1363,9 @@ def chat_with_mentor(
     session_id = require_resource_id(session_id, "会话")
     enforce_rate_limit(f"chat:{user.id}", CHAT_RATE_LIMIT)
     session = require_session(session_id, user)
+    if payload.tutor_settings is not None:
+        session.tutor_settings = TutorSettings.model_validate(payload.tutor_settings.model_dump())
+        session.updated_at = datetime.now(UTC)
     attach_organization_knowledge_context(session)
     log_debug_event(
         "v1.chat.request",
@@ -1407,6 +1431,9 @@ def stream_chat_with_mentor(
     session_id = require_resource_id(session_id, "会话")
     enforce_rate_limit(f"chat-stream:{user.id}", CHAT_RATE_LIMIT)
     session = require_session(session_id, user)
+    if payload.tutor_settings is not None:
+        session.tutor_settings = TutorSettings.model_validate(payload.tutor_settings.model_dump())
+        session.updated_at = datetime.now(UTC)
     attach_organization_knowledge_context(session)
     log_debug_event(
         "v1.chat.stream.request",
@@ -2019,6 +2046,7 @@ def admin_create_api_config(
         provider=payload.provider,
         base_url=payload.base_url,
         model=payload.model,
+        reasoning_effort=payload.reasoning_effort,
         is_active=payload.is_active,
         api_key_provided=bool(payload.api_key),
     )
@@ -2032,6 +2060,7 @@ def admin_create_api_config(
             is_active=payload.is_active,
             created_at=timestamp,
             updated_at=timestamp,
+            reasoning_effort=payload.reasoning_effort,
         )
         audit_event(admin, "admin.api_config.create", "api_config", config.id, safe_api_config_detail(config))
         log_debug_event("admin.api_config.create.response", admin_user_id=admin.id, config=safe_api_config_detail(config))
@@ -2061,6 +2090,7 @@ def admin_update_api_config(
         provider=payload.provider,
         base_url=payload.base_url,
         model=payload.model,
+        reasoning_effort=payload.reasoning_effort,
         is_active=payload.is_active,
         api_key_provided=payload.api_key is not None,
     )
@@ -2074,6 +2104,7 @@ def admin_update_api_config(
             is_active=current.is_active if payload.is_active is None else payload.is_active,
             created_at=current.created_at.isoformat(),
             updated_at=timestamp,
+            reasoning_effort=current.reasoning_effort if payload.reasoning_effort is None else payload.reasoning_effort,
         )
         audit_event(admin, "admin.api_config.update", "api_config", config.id, safe_api_config_detail(config))
         log_debug_event("admin.api_config.update.response", admin_user_id=admin.id, config=safe_api_config_detail(config))
@@ -2225,6 +2256,7 @@ def safe_api_config_detail(config: ApiConfig) -> dict[str, object]:
         "provider": config.provider,
         "base_url": config.base_url,
         "model": config.model,
+        "reasoning_effort": config.reasoning_effort,
         "is_active": config.is_active,
     }
 
@@ -2270,7 +2302,7 @@ def run_parse_job(job_id: str) -> None:
         if payload is None:
             log_debug_event("parse.job.worker.missing_payload", job_id=job_id)
             return
-        user_id, title, content = payload
+        user_id, title, content, material_origin = payload
         log_debug_event(
             "parse.job.worker.payload",
             job_id=job_id,
@@ -2306,6 +2338,7 @@ def run_parse_job(job_id: str) -> None:
                 user_id,
                 ai_config,
                 organization_id=job_user.organization_id if job_user and job_user.role in {"org_manager", "org_member"} else None,
+                material_origin=material_origin,  # type: ignore[arg-type]
             )
         finally:
             heartbeat_stop.set()
@@ -2328,12 +2361,11 @@ def run_parse_job(job_id: str) -> None:
         session.parse_message = f"{session.parse_message}；{graph_message}"
         store.update_parse_job(job_id, "running", 88, "GraphRAG 处理完成", now_iso())
         log_debug_event("parse.job.progress", job_id=job_id, status="running", progress=88, message=graph_message)
-        store.update_parse_job(job_id, "running", 92, "正在提前准备导师首句和讲台问题", now_iso())
-        log_debug_event("parse.job.progress", job_id=job_id, status="running", progress=92, message="正在提前准备导师首句和讲台问题")
+        store.update_parse_job(job_id, "running", 92, "正在提前准备费曼问题", now_iso())
+        log_debug_event("parse.job.progress", job_id=job_id, status="running", progress=92, message="正在提前准备费曼问题")
         prewarm_stats = prewarm_learning_assets(session, ai_config)
         session.parse_message = (
-            f"{session.parse_message}；已预生成 {prewarm_stats['starters']} 个导师首句、"
-            f"{prewarm_stats['questions']} 组费曼问题"
+            f"{session.parse_message}；已预生成 {prewarm_stats['questions']} 组费曼问题"
         )
         if prewarm_stats["errors"]:
             session.parse_message = f"{session.parse_message}（{prewarm_stats['errors']} 个节点预热失败，进入时自动补齐）"

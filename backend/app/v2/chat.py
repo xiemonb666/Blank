@@ -9,9 +9,11 @@ from fastapi.responses import StreamingResponse
 from pydantic import Field
 
 from ..agents.graph import get_agent_graph
+from ..agents.socrates import socrates_stream_prompt_parts
 from ..agents.state import AgentState
+from ..agents.utils import llm_chat_stream
 from ..debug_logging import log_debug_event, sanitize_debug_text, sanitize_debug_value
-from ..models import ChatMessage, LearningSession, NodeLearningProfile, StrictRequestModel, UserPublic
+from ..models import ChatMessage, LearningSession, NodeLearningProfile, StrictRequestModel, TutorSettings, UserPublic
 from ..security import (
     CSRF_COOKIE_NAME,
     LEGACY_CSRF_COOKIE_NAME,
@@ -41,6 +43,7 @@ class V2ChatRequest(StrictRequestModel):
     persona: str = Field(default="plain", pattern=r"^(plain|vivid|academic)$")
     confusion_event: bool = False
     starter_event: bool = False
+    tutor_settings: TutorSettings | None = None
 
 
 def _format_sse(data: dict) -> str:
@@ -112,12 +115,14 @@ def _build_agent_state(
         "memories": memories,
         "graph_context": graph_context,
         "ai_config": ai_config,
+        "stream_generation": True,
         "intent": "",
         "intent_reason": "",
         "dynamic_agents": [],
         "dynamic_guidance": "",
         "mentor_reply": "",
         "mentor_thinking": "",
+        "stream_response": False,
         "feynman_score": {},
         "feynman_feedback": "",
         "feynman_guidance": "",
@@ -333,6 +338,9 @@ async def v2_chat_stream(payload: V2ChatRequest, user: UserPublic = Depends(requ
 
     if session_obj is None:
         raise HTTPException(status_code=404, detail="会话不存在")
+    if payload.tutor_settings is not None:
+        session_obj.tutor_settings = payload.tutor_settings
+        session_obj.updated_at = datetime.now(UTC)
     if session_obj.organization_id and "组织知识库参考：" not in session_obj.material_context:
         organization_context = store.organization_knowledge_context(session_obj.organization_id)
         if organization_context:
@@ -382,6 +390,7 @@ async def v2_chat_stream(payload: V2ChatRequest, user: UserPublic = Depends(requ
             thinking_chunks: list[str] = []
             feynman_payload: dict | None = None
             feynman_guidance_text = ""
+            runtime_state = dict(initial_state)
             try:
                 # 发送初始状态
                 log_debug_event("v2.agent.status", session_id=payload.session_id, agent="router", message="总控路由正在分析意图...")
@@ -398,6 +407,8 @@ async def v2_chat_stream(payload: V2ChatRequest, user: UserPublic = Depends(requ
                 async for event in graph.astream(initial_state, stream_mode="updates"):
                     log_debug_event("v2.agent.update", session_id=payload.session_id, update=sanitize_debug_value(event))
                     for node_name, update in event.items():
+                        if isinstance(update, dict):
+                            runtime_state.update({key: value for key, value in update.items() if key != "agent_trace"})
                         if node_name == "router":
                             intent = update.get("intent", "question")
                             reason = update.get("intent_reason", "")
@@ -407,7 +418,7 @@ async def v2_chat_stream(payload: V2ChatRequest, user: UserPublic = Depends(requ
                             yield _format_sse({"type": "status", "agent": "router", "message": f"意图识别完成：{intent}", "detail": dynamic_detail})
                             for agent in dynamic_agents:
                                 yield _format_sse({"type": "status", "agent": agent, "message": dynamic_agent_status(agent)})
-                            if intent == "question":
+                            if intent in {"question", "answer"}:
                                 yield _format_sse({"type": "status", "agent": "socrates", "message": "苏格拉底导师正在生成引导回复..."})
                             elif intent == "explanation":
                                 yield _format_sse({"type": "status", "agent": "feynman", "message": "费曼考官正在进行五维度评分..."})
@@ -425,6 +436,23 @@ async def v2_chat_stream(payload: V2ChatRequest, user: UserPublic = Depends(requ
                             })
 
                         elif node_name == "socrates":
+                            if update.get("stream_response"):
+                                thought_system, thought_user, reply_system, reply_user = socrates_stream_prompt_parts(runtime_state)  # type: ignore[arg-type]
+                                yield _format_sse({"type": "status", "agent": "socrates", "message": "正在流式生成公开思考摘要..."})
+                                for chunk in llm_chat_stream(ai_config, thought_system, thought_user, temperature=0.2):
+                                    thinking_chunks.append(chunk)
+                                    log_debug_event("v2.agent.thought_delta", session_id=payload.session_id, agent="socrates", content=chunk)
+                                    yield _format_sse({"type": "thought_delta", "content": chunk})
+                                    await asyncio.sleep(0)
+                                yield _format_sse({"type": "status", "agent": "socrates", "message": "正在流式生成导师回复..."})
+                                for chunk in llm_chat_stream(ai_config, reply_system, reply_user, temperature=0.4):
+                                    mentor_chunks.append(chunk)
+                                    log_debug_event("v2.agent.message_delta", session_id=payload.session_id, agent="socrates", content=chunk)
+                                    yield _format_sse({"type": "message", "content": chunk})
+                                    await asyncio.sleep(0)
+                                if _critic_should_run(graph_context):
+                                    yield _format_sse({"type": "status", "agent": "critic", "message": "流式回复已生成，本轮跳过阻塞式核查"})
+                                continue
                             thinking = update.get("mentor_thinking", "")
                             reply = update.get("mentor_reply", "")
                             if thinking:

@@ -15,9 +15,11 @@ _ROUTER_SYSTEM_PROMPT = """你是一位意图识别专家，负责判断学习�
 可选意图类型：
 1. "question" —— 学习者提出了具体问题、疑惑或请求解释某个概念。
    特征：包含疑问词（为什么、怎么、是什么）、请求解释、指出不理解的地方。
-2. "explanation" —— 学习者在尝试复述、总结或解释某个概念（费曼学习法）。
+2. "answer" —— 学习者正在回答导师上一轮提出的问题。
+   特征：短句、省略主语、以“因为/所以/就是/会/不会”等承接上一题，或直接给出判断。
+3. "explanation" —— 学习者在尝试复述、总结或解释某个概念（费曼学习法）。
    特征：使用"我认为"、"我的理解是"、"总结一下"等表述，或在回答之前的问题。
-3. "chat" —— 闲聊、打招呼、表达情绪、与学习无关的话题。
+4. "chat" —— 闲聊、打招呼、表达情绪、与学习无关的话题。
    特征：问候语（你好、谢谢）、纯情绪表达（太难了、明白了）、无关话题。
 
 可选动态增派角色 dynamic_agents：
@@ -28,16 +30,71 @@ _ROUTER_SYSTEM_PROMPT = """你是一位意图识别专家，负责判断学习�
 
 判定细则：
 - 如果学习者同时有情绪和具体学习问题，优先判为 "question"。
-- 如果学习者主要在给出自己的理解、解释、类比或总结，判为 "explanation"，即使语气不确定。
+- 如果上一轮导师问了问题，学习者本轮是短答或省略主语的承接句，优先判为 "answer"，不要判为 chat。
+- 如果学习者主要在完整复述、总结、类比或解释一个概念，判为 "explanation"，即使语气不确定。
 - 纯数字、空泛短句、问候、感谢、单纯抱怨且没有具体问题时判为 "chat"。
 - dynamic_agents 可以为空数组；最多选择 4 个，按 planner -> analyst -> coach -> memory 的顺序返回。
 
 你必须严格返回合法 JSON，不要包含 Markdown 代码块标记：
 {
-  "intent": "question" | "explanation" | "chat",
+  "intent": "question" | "answer" | "explanation" | "chat",
   "reason": "一句话说明判断依据",
   "dynamic_agents": ["planner" | "analyst" | "coach" | "memory"]
 }"""
+
+
+_QUESTION_MARKERS = ("?", "？", "为什么", "怎么", "如何", "能不能", "你能", "请你", "哪", "什么")
+_CHAT_ONLY_MESSAGES = {
+    "你好",
+    "您好",
+    "谢谢",
+    "感谢",
+    "ok",
+    "OK",
+    "嗯",
+    "哦",
+    "啊",
+    "好",
+    "好的",
+    "明白了",
+    "知道了",
+}
+_EMOTION_ONLY_MESSAGES = ("太难了", "好难", "不会", "不懂", "听不懂", "烦", "累")
+_ANSWER_CUES = ("因为", "所以", "就是", "会", "不会", "不能", "可以", "不可以", "不是", "是", "要", "不用")
+
+
+def _last_mentor_question(history: object) -> str:
+    if not isinstance(history, list):
+        return ""
+    for item in reversed(history):
+        if not isinstance(item, dict):
+            continue
+        if item.get("role") != "mentor":
+            continue
+        text = str(item.get("text") or "").strip()
+        if text and any(marker in text for marker in _QUESTION_MARKERS):
+            return text
+    return ""
+
+
+def _looks_like_short_answer(user_message: str, history: object) -> bool:
+    message = user_message.strip()
+    if not message or not _last_mentor_question(history):
+        return False
+    compact = "".join(message.split())
+    if compact in _CHAT_ONLY_MESSAGES:
+        return False
+    if compact in _EMOTION_ONLY_MESSAGES:
+        return False
+    if len(compact) > 40:
+        return False
+    if any(marker in compact for marker in _QUESTION_MARKERS):
+        return False
+    if compact.startswith(_ANSWER_CUES):
+        return True
+    if any(cue in compact for cue in ("因为", "所以", "导致", "说明", "会", "不")):
+        return True
+    return len(compact) >= 3
 
 
 def router_node(state: AgentState) -> dict:
@@ -75,9 +132,12 @@ def router_node(state: AgentState) -> dict:
         result = parse_json_from_llm(raw)
         intent = result.get("intent", "question")
         reason = result.get("reason", "未提供判断依据")
+        if intent in {"chat", "explanation"} and _looks_like_short_answer(user_message, state.get("chat_history", [])):
+            intent = "answer"
+            reason = "学习者短答正在承接上一题，按上一题回答处理。"
         dynamic_agents = normalize_dynamic_agents(result.get("dynamic_agents"))
-        # 安全校验：只允许三种意图
-        if intent not in {"question", "explanation", "chat"}:
+        # 安全校验：只允许固定意图
+        if intent not in {"question", "answer", "explanation", "chat"}:
             intent = "question"
         if not dynamic_agents:
             dynamic_agents = heuristic_dynamic_agents(user_message, intent)

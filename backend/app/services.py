@@ -34,6 +34,8 @@ from .models import (
     KnowledgeNode,
     LearningSession,
     MemoryEntry,
+    MaterialOrigin,
+    NodePrimer,
     NodeLearningProfile,
     Persona,
     QuestionDiagnosticItem,
@@ -624,6 +626,7 @@ def create_session(
     organization_id: str | None = None,
     task_id: str | None = None,
     visibility: str = "personal",
+    material_origin: MaterialOrigin = "text",
 ) -> LearningSession:
     normalized = content.strip()
     if not normalized:
@@ -642,6 +645,7 @@ def create_session(
         task_id=task_id,
         visibility=visibility,
         material_title=title.strip() or "未命名材料",
+        material_origin=material_origin,
         material_context=trim_material_context(normalized),
         nodes=nodes,
         active_node_id=active_id,
@@ -658,13 +662,77 @@ def create_session(
     )
 
 
+def generate_node_primer(session: LearningSession, node_id: str) -> tuple[NodePrimer, bool]:
+    node = find_node(session.nodes, node_id)
+    cached = session.node_primers.get(node.id)
+    if cached:
+        return cached, True
+
+    evidence_context = evidence_context_for_turn(session, node, node.title)
+    evidence = node.evidence.strip() or evidence_context.text.strip()
+    plain_explanation = build_primer_explanation(session, node)
+    example = build_primer_example(session, node, evidence)
+    keywords = build_primer_keywords(node)
+    warmup_question = (
+        f"准备好后，先用一句话说说「{node.title}」主要在解决什么问题。"
+        if session.material_origin == "topic"
+        else f"准备好后，先用一句话说说材料里的「{node.title}」主要在解决什么问题。"
+    )
+    primer = NodePrimer(
+        node_id=node.id,
+        title=node.title,
+        plain_explanation=truncate_for_prompt(plain_explanation, 780),
+        example=truncate_for_prompt(example, 480),
+        keywords=keywords,
+        warmup_question=warmup_question,
+    )
+    session.node_primers[node.id] = primer
+    session.updated_at = datetime.now(UTC)
+    return primer, False
+
+
+def build_primer_explanation(session: LearningSession, node: KnowledgeNode) -> str:
+    source_label = "这个学习主题" if session.material_origin == "topic" else "这份材料"
+    complexity_hint = {
+        1: "先把它当作入口概念，不需要一开始就记复杂术语。",
+        2: "它是后面推理会反复用到的基础台阶。",
+        3: "它连接定义和机制，适合先抓住它解决的问题。",
+        4: "它偏机制层，先看清因果顺序，再处理细节。",
+        5: "它偏综合层，先抓主线，再回头补边界。",
+    }.get(node.complexity, "先抓住它解决的问题，再处理细节。")
+    return (
+        f"先不用急着回答导师问题。「{node.title}」在{source_label}里可以先理解成："
+        f"{node.summary.strip()} {complexity_hint}"
+    )
+
+
+def build_primer_example(session: LearningSession, node: KnowledgeNode, evidence: str) -> str:
+    if evidence:
+        snippet = truncate_for_prompt(re.sub(r"\s+", " ", evidence), 120)
+        source_label = "当前主题线索" if session.material_origin == "topic" else "材料线索"
+        return f"{source_label}里有这样一个抓手：{snippet}。你可以先问自己：它是在描述定义、机制，还是一个使用场景？"
+    return f"可以把「{node.title}」先放进一个熟悉场景里：它出现前有什么困惑，出现后帮我们做出什么判断？"
+
+
+def build_primer_keywords(node: KnowledgeNode) -> list[str]:
+    candidates: list[str] = [node.title]
+    for text in (node.summary, node.evidence, node.complexity_reason):
+        for item in re.split(r"[，,。；;、\s]+", text):
+            clean = item.strip("：:（）()[]【】")
+            if 2 <= len(clean) <= 12 and clean not in candidates:
+                candidates.append(clean)
+            if len(candidates) >= 6:
+                return candidates
+    return candidates[:6]
+
+
 def prewarm_learning_assets(
     session: LearningSession,
     ai_config: dict[str, str] | None,
     node_limit: int | None = None,
     concurrency: int | None = None,
 ) -> dict[str, int]:
-    """提前生成讲台费曼题和学习首句；失败不阻断解析主流程。"""
+    """提前生成费曼题；失败不阻断解析主流程。"""
     if not ai_config:
         return {"nodes": 0, "questions": 0, "starters": 0, "errors": 0}
     limit = node_limit if node_limit is not None else prewarm_node_limit()
@@ -688,17 +756,11 @@ def prewarm_learning_assets(
                 stats["errors"] += 1
                 continue
             questions = result.get("questions", [])
-            starter = result.get("starter")
             if isinstance(questions, list) and questions:
                 session.feynman_questions[node_id] = questions
                 session.feynman_answers.setdefault(node_id, {})
                 session.feynman_followups.setdefault(node_id, {})
                 stats["questions"] += 1
-            if isinstance(starter, ChatMessage) and starter.text.strip():
-                existing = [message for message in session.messages if message.node_id == node_id]
-                if not existing:
-                    session.messages.append(starter)
-                    stats["starters"] += 1
     session.updated_at = datetime.now(UTC)
     return stats
 
@@ -709,21 +771,7 @@ def prewarm_node_assets(
     ai_config: dict[str, str],
 ) -> dict[str, object]:
     questions = generate_feynman_questions(session, node_id, ai_config)
-    result = chat(
-        session=session,
-        node_id=node_id,
-        persona=session.persona,
-        message="",
-        failure_count=0,
-        preserve_persona=True,
-        starter_event=True,
-        ai_config=ai_config,
-    )
-    starter = next(
-        (message for message in messages_for_node(result.session, node_id) if message.role == "mentor"),
-        None,
-    )
-    return {"questions": questions, "starter": starter}
+    return {"questions": questions}
 
 
 def prewarm_node_limit() -> int:
@@ -907,6 +955,7 @@ def call_openai_compatible_chat(
     model: str,
     messages: list[dict[str, str]],
     temperature: float = 0.35,
+    reasoning_effort: str | None = None,
 ) -> str:
     safe_base_url, safe_api_key, safe_model = validate_model_request_parts(base_url, api_key, model)
     endpoint = openai_chat_endpoint(safe_base_url)
@@ -916,6 +965,7 @@ def call_openai_compatible_chat(
         "messages": messages,
         "temperature": request_temperature,
     }
+    apply_reasoning_effort(body, reasoning_effort)
     request = urllib.request.Request(
         endpoint,
         data=json.dumps(body).encode("utf-8"),
@@ -937,7 +987,26 @@ def call_openai_compatible_chat(
             status = getattr(response, "status", None) or getattr(response, "code", None)
     except urllib.error.HTTPError as exc:
         detail = safe_http_error_detail(exc)
-        if request_temperature != 1 and is_temperature_one_required_error(exc, detail):
+        if body.get("reasoning_effort") and is_reasoning_unsupported_error(detail):
+            log_debug_event(
+                "llm.openai.reasoning_retry",
+                endpoint=endpoint,
+                model=safe_model,
+                requested_reasoning_effort=body.get("reasoning_effort"),
+                error=detail,
+            )
+            retry_body = dict(body)
+            retry_body.pop("reasoning_effort", None)
+            retry_request = urllib.request.Request(
+                endpoint,
+                data=json.dumps(retry_body).encode("utf-8"),
+                headers=openai_compatible_headers(safe_base_url, safe_api_key),
+                method="POST",
+            )
+            with open_model_request(retry_request, timeout=openai_request_timeout(safe_base_url)) as response:
+                raw_body = read_model_response(response).decode("utf-8")
+                status = getattr(response, "status", None) or getattr(response, "code", None)
+        elif request_temperature != 1 and is_temperature_one_required_error(exc, detail):
             log_debug_event(
                 "llm.openai.temperature_retry",
                 endpoint=endpoint,
@@ -951,6 +1020,7 @@ def call_openai_compatible_chat(
                 "messages": messages,
                 "temperature": 1,
             }
+            apply_reasoning_effort(retry_body, reasoning_effort)
             retry_request = urllib.request.Request(
                 endpoint,
                 data=json.dumps(retry_body).encode("utf-8"),
@@ -1005,6 +1075,7 @@ def stream_openai_compatible_chat(
     model: str,
     messages: list[dict[str, str]],
     temperature: float = 0.35,
+    reasoning_effort: str | None = None,
 ):
     safe_base_url, safe_api_key, safe_model = validate_model_request_parts(base_url, api_key, model)
     endpoint = openai_chat_endpoint(safe_base_url)
@@ -1015,6 +1086,7 @@ def stream_openai_compatible_chat(
         "temperature": request_temperature,
         "stream": True,
     }
+    apply_reasoning_effort(body, reasoning_effort)
     request = urllib.request.Request(
         endpoint,
         data=json.dumps(body).encode("utf-8"),
@@ -1030,7 +1102,29 @@ def stream_openai_compatible_chat(
         messages=messages,
     )
     streamed_parts: list[str] = []
-    with open_model_request(request, timeout=openai_request_timeout(safe_base_url)) as response:
+    try:
+        response_context = open_model_request(request, timeout=openai_request_timeout(safe_base_url))
+    except urllib.error.HTTPError as exc:
+        detail = safe_http_error_detail(exc)
+        if not body.get("reasoning_effort") or not is_reasoning_unsupported_error(detail):
+            raise
+        log_debug_event(
+            "llm.openai.stream.reasoning_retry",
+            endpoint=endpoint,
+            model=safe_model,
+            requested_reasoning_effort=body.get("reasoning_effort"),
+            error=detail,
+        )
+        retry_body = dict(body)
+        retry_body.pop("reasoning_effort", None)
+        retry_request = urllib.request.Request(
+            endpoint,
+            data=json.dumps(retry_body).encode("utf-8"),
+            headers=openai_compatible_headers(safe_base_url, safe_api_key),
+            method="POST",
+        )
+        response_context = open_model_request(retry_request, timeout=openai_request_timeout(safe_base_url))
+    with response_context as response:
         raw_payload_lines: list[str] = []
         total_bytes = 0
         for raw_line in response:
@@ -1826,6 +1920,19 @@ def openai_compatible_temperature(base_url: str, model: str, temperature: float)
     return temperature
 
 
+def apply_reasoning_effort(body: dict, reasoning_effort: str | None) -> None:
+    effort = str(reasoning_effort or "").strip().lower()
+    if effort in {"low", "medium", "high"}:
+        body["reasoning_effort"] = effort
+
+
+def is_reasoning_unsupported_error(detail: str) -> bool:
+    lowered = detail.lower()
+    return "reasoning_effort" in lowered or (
+        "reasoning" in lowered and ("unsupported" in lowered or "unknown" in lowered or "extra" in lowered)
+    )
+
+
 def is_temperature_one_required_error(exc: urllib.error.HTTPError, detail: str) -> bool:
     if exc.code != 400:
         return False
@@ -2145,6 +2252,7 @@ def _stream_chat_events_impl(
                     {"role": "user", "content": analysis_user_prompt},
                 ],
                 temperature=0.2,
+                reasoning_effort=ai_config.get("reasoning_effort"),
             ):
                 thinking_chunks.append(chunk)
                 yield {"type": "thinking_delta", "text": chunk}
@@ -2157,6 +2265,7 @@ def _stream_chat_events_impl(
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.45,
+                reasoning_effort=ai_config.get("reasoning_effort"),
             ):
                 chunks.append(chunk)
                 yield {"type": "delta", "text": chunk}
@@ -2711,7 +2820,10 @@ def _generate_feynman_questions_impl(
     except (OSError, ValueError, KeyError, IndexError, json.JSONDecodeError) as exc:
         raise AiChatError(f"费曼出题失败：{exc}") from exc
     try:
-        questions = parse_feynman_questions(content)
+        questions = sanitize_feynman_questions_for_origin(
+            parse_feynman_questions(content),
+            session.material_origin,
+        )
     except (ValueError, json.JSONDecodeError) as exc:
         raise AiChatError(f"费曼出题失败：{exc}") from exc
     session.feynman_questions[node.id] = questions
@@ -2726,21 +2838,55 @@ def build_feynman_question_prompt(session: LearningSession, node: KnowledgeNode)
     history = format_recent_history_for_node(session, node)
     memory_context = format_memory_context(session, node)
     profile_context = format_node_profile_context(session, node)
+    source_label = "当前学习主题线索" if session.material_origin == "topic" else "材料片段"
+    source_text = evidence_context.text or ("暂无可用主题线索" if session.material_origin == "topic" else "暂无可用材料片段")
+    topic_instruction = (
+        "当前会话来自用户直接输入的学习主题，不是上传文件。问题中禁止出现“根据材料”“原文”“上传文件”“讲义”等措辞；请使用“围绕当前节点”或“结合当前主题线索”。\n"
+        if session.material_origin == "topic"
+        else ""
+    )
     return (
         "请为当前知识节点生成逐题费曼验证问题，并只返回 JSON。\n"
         "不要预设通用题，不要用规则模板替代材料理解。\n\n"
         "<untrusted_learning_context>\n"
         f"任务：{session.material_title}\n"
+        f"会话来源：{session.material_origin}\n"
         f"当前节点：{node.title}\n"
         f"节点摘要：{node.summary}\n"
         f"节点复杂度：{node.complexity}/5\n"
         f"节点闯关画像：\n{profile_context}\n"
-        f"材料片段：\n{evidence_context.text or '暂无可用材料片段'}\n"
+        f"{source_label}：\n{source_text}\n"
         f"任务记忆：\n{memory_context or '暂无'}\n"
         f"最近对话：\n{history or '暂无'}\n"
         "</untrusted_learning_context>\n"
+        f"{topic_instruction}"
         "请拆成 5 个由浅入深的问题，覆盖 warmup、mechanism、transfer、correction、recap；每题只测一个考点。"
     )
+
+
+def sanitize_feynman_questions_for_origin(
+    questions: list[FeynmanQuestion],
+    material_origin: MaterialOrigin,
+) -> list[FeynmanQuestion]:
+    if material_origin != "topic":
+        return questions
+    replacements = {
+        "根据材料": "围绕当前节点",
+        "结合材料": "结合当前主题线索",
+        "材料中": "当前主题中",
+        "原文": "当前主题线索",
+        "上传文件": "当前学习主题",
+        "讲义": "当前主题",
+    }
+    sanitized: list[FeynmanQuestion] = []
+    for question in questions:
+        question_text = question.question
+        focus = question.focus
+        for source, target in replacements.items():
+            question_text = question_text.replace(source, target)
+            focus = focus.replace(source, target)
+        sanitized.append(question.model_copy(update={"question": question_text, "focus": focus}))
+    return sanitized
 
 
 def parse_feynman_questions(raw: str) -> list[FeynmanQuestion]:

@@ -51,6 +51,7 @@ export const UI_REVIEW_API_CONFIGS: ApiConfig[] = [
     base_url: "https://api.openai.com/v1",
     api_key_masked: "sk-...review",
     model: "gpt-4.1-mini",
+    reasoning_effort: "medium",
     is_active: true,
     created_at: "2026-06-11T00:00:00Z",
     updated_at: "2026-06-11T00:00:00Z",

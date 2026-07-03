@@ -13,10 +13,12 @@ def utc_now() -> datetime:
 Persona = Literal["plain", "vivid", "academic"]
 TutorLearningStyle = Literal["visual", "verbal", "active"]
 TutorCommunicationType = Literal["socratic", "story", "textbook", "coach"]
+MaterialOrigin = Literal["upload", "topic", "text"]
 NodeStatus = Literal["mastered", "active", "available", "locked"]
 MessageRole = Literal["mentor", "learner"]
 UserRole = Literal["admin", "org_manager", "org_member", "learner"]
 ApiProvider = Literal["openai", "vllm", "ollama", "custom"]
+ReasoningEffort = Literal["off", "low", "medium", "high"]
 SpeechConfigKind = Literal["asr", "tts"]
 ParseSource = Literal["ai", "local"]
 ParseJobStatus = Literal["queued", "running", "completed", "failed"]
@@ -95,6 +97,16 @@ class FeynmanQuestion(BaseModel):
     follow_up_of: str | None = None
 
 
+class NodePrimer(BaseModel):
+    node_id: str
+    title: str
+    plain_explanation: str = Field(min_length=1, max_length=800)
+    example: str = Field(min_length=1, max_length=500)
+    keywords: list[str] = Field(default_factory=list, max_length=6)
+    warmup_question: str = Field(min_length=1, max_length=300)
+    created_at: datetime = Field(default_factory=utc_now)
+
+
 class FeynmanAnswer(BaseModel):
     question_id: str = Field(min_length=1, max_length=80)
     label: str = Field(min_length=1, max_length=120)
@@ -150,6 +162,7 @@ class LearningSession(BaseModel):
     task_id: str | None = None
     visibility: SessionVisibility = "personal"
     material_title: str
+    material_origin: MaterialOrigin = "text"
     material_context: str = ""
     nodes: list[KnowledgeNode]
     active_node_id: str
@@ -158,6 +171,7 @@ class LearningSession(BaseModel):
     messages: list[ChatMessage]
     memories: list[MemoryEntry] = Field(default_factory=list)
     node_profiles: dict[str, NodeLearningProfile] = Field(default_factory=dict)
+    node_primers: dict[str, NodePrimer] = Field(default_factory=dict)
     feynman_questions: dict[str, list[FeynmanQuestion]] = Field(default_factory=dict)
     feynman_answers: dict[str, dict[str, FeynmanAnswer]] = Field(default_factory=dict)
     feynman_followups: dict[str, dict[str, FeynmanFollowUpState]] = Field(default_factory=dict)
@@ -177,6 +191,7 @@ class LearningSessionPublic(BaseModel):
     task_id: str | None = None
     visibility: SessionVisibility = "personal"
     material_title: str
+    material_origin: MaterialOrigin = "text"
     nodes: list[KnowledgeNode]
     active_node_id: str
     persona: Persona = "plain"
@@ -186,6 +201,7 @@ class LearningSessionPublic(BaseModel):
     message_counts: dict[str, int] = Field(default_factory=dict)
     memories: list[MemoryEntry] = Field(default_factory=list)
     node_profiles: dict[str, NodeLearningProfile] = Field(default_factory=dict)
+    node_primers: dict[str, NodePrimer] = Field(default_factory=dict)
     feynman_questions: dict[str, list[FeynmanQuestion]] = Field(default_factory=dict)
     feynman_answers: dict[str, dict[str, FeynmanAnswer]] = Field(default_factory=dict)
     feynman_followups: dict[str, dict[str, FeynmanFollowUpState]] = Field(default_factory=dict)
@@ -208,6 +224,7 @@ class LearningSessionPublic(BaseModel):
         payload["messages"] = active_messages
         payload["active_messages"] = active_messages
         payload["node_profiles"] = node_profiles
+        payload["node_primers"] = session.node_primers
         payload["message_counts"] = {
             node.id: sum(1 for message in session.messages if message.node_id == node.id)
             for node in session.nodes
@@ -566,6 +583,7 @@ class OrganizationTraceExportResponse(BaseModel):
 class SessionCreateRequest(StrictRequestModel):
     title: str = Field(default="未命名材料", min_length=1, max_length=120)
     content: str = Field(default="", max_length=20000)
+    material_origin: MaterialOrigin = "text"
 
 
 class SessionCreateResponse(BaseModel):
@@ -618,6 +636,7 @@ class ChatRequest(StrictRequestModel):
     preserve_persona: bool = False
     confusion_event: bool = False
     starter_event: bool = False
+    tutor_settings: TutorSettings | None = None
 
 
 class ChatResponse(BaseModel):
@@ -648,6 +667,11 @@ class NodeSelectRequest(StrictRequestModel):
 class FeynmanQuestionResponse(BaseModel):
     questions: list[FeynmanQuestion]
     answers: dict[str, FeynmanAnswer] = Field(default_factory=dict)
+    reused: bool = False
+
+
+class NodePrimerResponse(BaseModel):
+    primer: NodePrimer
     reused: bool = False
 
 
@@ -702,6 +726,7 @@ class ApiConfig(BaseModel):
     base_url: str = Field(min_length=1, max_length=500)
     api_key_masked: str
     model: str = Field(default="", max_length=120)
+    reasoning_effort: ReasoningEffort = "medium"
     is_active: bool
     created_at: datetime
     updated_at: datetime
@@ -712,6 +737,7 @@ class ApiConfigCreateRequest(StrictRequestModel):
     base_url: str = Field(min_length=1, max_length=500)
     api_key: str = Field(default="", max_length=1000)
     model: str = Field(default="", max_length=120)
+    reasoning_effort: ReasoningEffort = "medium"
     is_active: bool = True
 
 
@@ -720,6 +746,7 @@ class ApiConfigUpdateRequest(StrictRequestModel):
     base_url: str | None = Field(default=None, min_length=1, max_length=500)
     api_key: str | None = Field(default=None, max_length=1000)
     model: str | None = Field(default=None, max_length=120)
+    reasoning_effort: ReasoningEffort | None = None
     is_active: bool | None = None
 
 

@@ -1121,7 +1121,7 @@
 
 .flow-mission {
   display: grid;
-  grid-template-columns: minmax(118px, 0.3fr) minmax(0, 1fr) minmax(150px, 0.62fr);
+  grid-template-columns: minmax(118px, 0.28fr) minmax(0, 1fr) minmax(150px, 0.5fr) minmax(138px, 0.34fr);
   gap: 10px;
   align-items: stretch;
   border: 1.5px solid var(--line);
@@ -1170,6 +1170,20 @@
 .flow-mission b span {
   display: block;
   margin-bottom: 5px;
+}
+
+.flow-current-mode {
+  border-left: 1px solid rgba(17, 17, 17, 0.45);
+  padding-left: 10px;
+}
+
+.flow-current-mode span {
+  display: inline-flex;
+  width: fit-content;
+  border: 1px solid rgba(17, 17, 17, 0.48);
+  background: rgba(255, 250, 240, 0.86);
+  padding: 3px 6px;
+  color: var(--ink);
 }
 
 .agent-workflow-panel {

@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useRef } from "react";
-import { ArrowRight, Gauge, Send, Volume2 } from "lucide-react";
+import { ArrowRight, BookOpen, Gauge, Send, Volume2 } from "lucide-react";
 import { communicationTypes, learningStyles, personas } from "../app/constants";
 import { stageLabelText, statusLabel } from "../app/sessionState";
 import { AgentWorkflowPanel } from "../components/AgentWorkflowPanel";
@@ -7,7 +7,7 @@ import { PagedList, SegmentedControl } from "../components/DesignPrimitives";
 import { RichText } from "../components/RichText";
 import { ThoughtProcess } from "../components/ThoughtProcess";
 import type { AgentWorkflowEvent } from "../hooks/useV2Chat";
-import type { KnowledgeNode, Message, NodeLearningProfile, Persona, TutorCommunicationType, TutorLearningStyle, TutorSettings } from "../types";
+import type { KnowledgeNode, Message, NodeLearningProfile, NodePrimer, Persona, TutorCommunicationType, TutorLearningStyle, TutorSettings } from "../types";
 
 interface FlowStageProps {
   activeNode: KnowledgeNode;
@@ -16,6 +16,8 @@ interface FlowStageProps {
   draft: string;
   nodeMessageCounts: Record<string, number>;
   profile: NodeLearningProfile | null;
+  primer: NodePrimer | null;
+  isPrimerLoading: boolean;
   persona: Persona;
   tutorSettings: TutorSettings;
   onPersonaChange: (persona: Persona) => void;
@@ -24,6 +26,7 @@ interface FlowStageProps {
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onSend: () => void;
   onConfuse: () => void;
+  onStartPractice: () => void;
   onFeynman: () => void;
   onSelectNode: (node: KnowledgeNode) => Promise<void>;
   isBusy: boolean;
@@ -45,6 +48,8 @@ export function FlowStage({
   draft,
   nodeMessageCounts,
   profile,
+  primer,
+  isPrimerLoading,
   persona,
   tutorSettings,
   onPersonaChange,
@@ -53,6 +58,7 @@ export function FlowStage({
   onSubmit,
   onSend,
   onConfuse,
+  onStartPractice,
   onFeynman,
   onSelectNode,
   isBusy,
@@ -191,6 +197,11 @@ export function FlowStage({
             <span>当前挑战</span>
             {nextChallenge}
           </b>
+          <div className="flow-current-mode" aria-label="当前导师模式">
+            <span>{personas[persona].label}</span>
+            <span>{communicationTypes[tutorSettings.communication_type].label}</span>
+            <span>{learningStyles[tutorSettings.learning_style].label}</span>
+          </div>
         </section>
 
         {v2Enabled && (
@@ -239,8 +250,10 @@ export function FlowStage({
                   </div>
                 );
               })
+            ) : primer ? (
+              <PrimerPanel primer={primer} isBusy={isBusy} onStartPractice={onStartPractice} />
             ) : (
-              <div className="message-empty">AI 导师正在准备第一个问题。</div>
+              <div className="message-empty">{isPrimerLoading ? "正在准备预习卡片。" : "预习卡片准备完成后再开始练习。"}</div>
             )}
             <div className="message-scroll-anchor" ref={messageEndRef} aria-hidden="true" />
           </div>
@@ -275,6 +288,43 @@ export function FlowStage({
         </div>
       </section>
     </div>
+  );
+}
+
+function PrimerPanel({
+  primer,
+  isBusy,
+  onStartPractice,
+}: {
+  primer: NodePrimer;
+  isBusy: boolean;
+  onStartPractice: () => void;
+}) {
+  return (
+    <article className="primer-panel">
+      <div className="primer-heading">
+        <BookOpen size={18} />
+        <span>先学一点</span>
+        <strong>{primer.title}</strong>
+      </div>
+      <p>{primer.plain_explanation}</p>
+      <div className="primer-example">
+        <span>例子</span>
+        <p>{primer.example}</p>
+      </div>
+      <div className="primer-keywords" aria-label="关键词">
+        {primer.keywords.map((keyword) => (
+          <b key={keyword}>{keyword}</b>
+        ))}
+      </div>
+      <div className="primer-action">
+        <span>{primer.warmup_question}</span>
+        <button className="primary-button" type="button" onClick={onStartPractice} disabled={isBusy}>
+          开始练习
+          <ArrowRight size={18} />
+        </button>
+      </div>
+    </article>
   );
 }
 

@@ -962,6 +962,11 @@ select {
     display: none;
   }
 
+  .flow-current-mode {
+    border-left: 0;
+    padding-left: 0;
+  }
+
   .agent-workflow-panel.collapsed {
     min-block-size: 0;
     padding: 6px 8px;

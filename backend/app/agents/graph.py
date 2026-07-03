@@ -66,6 +66,8 @@ def _route_by_critic(state: AgentState) -> str:
 
 def _route_after_generation(state: AgentState) -> str:
     """只有真实 GraphRAG 召回可用时才进入 Critic，避免回退上下文触发额外模型调用。"""
+    if state.get("stream_generation"):
+        return "finalize"
     graph_context = state.get("graph_context", {})
     if graph_context.get("fallback"):
         return "finalize"
@@ -107,7 +109,7 @@ def build_agent_graph() -> StateGraph:
     构建并编译 LangGraph 多智能体状态图。
 
     工作流：
-        router → (question→socrates→critic→[rewrite|end])
+        router → (question/answer→socrates→critic→[rewrite|end])
                 → (explanation→feynman→critic→[rewrite|end])
                 → (chat→socrates_chat→end)
     """

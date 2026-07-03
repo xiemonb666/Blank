@@ -1,6 +1,7 @@
 export type Persona = "plain" | "vivid" | "academic";
 export type TutorLearningStyle = "visual" | "verbal" | "active";
 export type TutorCommunicationType = "socratic" | "story" | "textbook" | "coach";
+export type MaterialOrigin = "upload" | "topic" | "text";
 export type NodeStatus = "mastered" | "active" | "available" | "locked";
 export type Stage = "canvas" | "map" | "flow" | "feynman" | "mastery" | "evidence" | "research" | "admin" | "organization" | "tasks";
 export type UserRole = "admin" | "org_manager" | "org_member" | "learner";
@@ -33,6 +34,16 @@ export interface TutorSettings {
   depth_level: number;
   learning_style: TutorLearningStyle;
   communication_type: TutorCommunicationType;
+}
+
+export interface NodePrimer {
+  node_id: string;
+  title: string;
+  plain_explanation: string;
+  example: string;
+  keywords: string[];
+  warmup_question: string;
+  created_at: string;
 }
 
 export interface DiagnosticItem {
@@ -149,6 +160,7 @@ export interface ApiConfig {
   base_url: string;
   api_key_masked: string;
   model: string;
+  reasoning_effort: "off" | "low" | "medium" | "high";
   is_active: boolean;
   created_at: string;
   updated_at: string;

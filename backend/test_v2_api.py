@@ -89,6 +89,16 @@ class FakeV2FeynmanOnlyGraph:
         await asyncio.sleep(0)
 
 
+class FakeV2SettingsGraph:
+    async def astream(self, initial_state, stream_mode="updates"):
+        assert stream_mode == "updates"
+        assert initial_state["tutor_settings"]["communication_type"] == "story"
+        yield {"router": {"intent": "question", "intent_reason": "设置测试", "dynamic_agents": []}}
+        yield {"socrates": {"mentor_thinking": "设置已生效", "mentor_reply": "讲故事风格回复。"}}
+        yield {"finalize": {"final_output": "讲故事风格回复。"}}
+        await asyncio.sleep(0)
+
+
 def parse_sse_events(body: str) -> list[dict]:
     events: list[dict] = []
     for block in body.split("\n\n"):
@@ -219,6 +229,139 @@ def registered_user_id(username: str):
     record = app_main.store.get_user_password_hash(username)
     assert record is not None
     return record[0].id
+
+
+def test_router_treats_short_reply_to_mentor_question_as_answer(monkeypatch) -> None:
+    from app.agents import router as router_module
+
+    monkeypatch.setattr(
+        router_module,
+        "llm_chat",
+        lambda **_: '{"intent":"chat","reason":"短句像闲聊","dynamic_agents":[]}',
+    )
+
+    result = router_module.router_node(
+        {
+            "node_title": "瞬时速度",
+            "user_message": "因为会时快时慢",
+            "chat_history": [
+                {"role": "mentor", "text": "要描述一个物体在某一瞬间的速度，为什么用平均速度不算数？"}
+            ],
+        }
+    )
+
+    assert result["intent"] == "answer"
+    assert "上一题" in result["intent_reason"]
+
+
+def test_node_primer_is_cached_without_creating_chat_messages() -> None:
+    client = TestClient(app_main.app)
+    headers = auth_headers(client, "tester_node_primer")
+    session = make_session(registered_user_id("tester_node_primer"), title="想学：微积分")
+
+    first = client.post(
+        f"/api/sessions/{session.id}/node-primer",
+        headers=headers,
+        json={"node_id": session.active_node_id},
+    )
+    assert first.status_code == 200
+    payload = first.json()
+    assert payload["reused"] is False
+    assert payload["primer"]["node_id"] == session.active_node_id
+    assert payload["primer"]["plain_explanation"]
+    assert payload["primer"]["example"]
+    assert payload["primer"]["keywords"]
+
+    second = client.post(
+        f"/api/sessions/{session.id}/node-primer",
+        headers=headers,
+        json={"node_id": session.active_node_id},
+    )
+    assert second.status_code == 200
+    assert second.json()["reused"] is True
+    assert second.json()["primer"] == payload["primer"]
+
+    saved = client.get(f"/api/sessions/{session.id}", headers=headers).json()
+    assert saved["messages"] == []
+    assert saved["node_primers"][session.active_node_id] == payload["primer"]
+
+
+def test_v2_streams_thought_delta_and_message_with_real_graph(monkeypatch) -> None:
+    from app.agents.graph import build_agent_graph
+    from app.agents import router as router_module
+
+    monkeypatch.setattr("app.v2.chat.get_agent_graph", lambda: build_agent_graph())
+    monkeypatch.setattr(
+        router_module,
+        "llm_chat",
+        lambda **_: '{"intent":"question","reason":"测试真实图流式","dynamic_agents":[]}',
+    )
+
+    def fake_llm_chat_stream(_ai_config, system_prompt, _user_prompt, temperature=0.35):
+        if "公开思考摘要" in system_prompt:
+            yield "材料依据：测试片段。"
+            yield "回答策略：先讲后问。"
+            return
+        yield "这是"
+        yield "真流式回复。"
+
+    monkeypatch.setattr("app.v2.chat.llm_chat_stream", fake_llm_chat_stream)
+
+    client = TestClient(app_main.app)
+    headers = auth_headers(client, "tester_v2_true_stream")
+    active_config()
+    session = make_session(registered_user_id("tester_v2_true_stream"))
+
+    with client.stream(
+        "POST",
+        "/api/v2/chat/stream",
+        headers={**headers, "Accept": "text/event-stream"},
+        json={"session_id": session.id, "message": "为什么会这样？", "persona": "plain"},
+    ) as response:
+        assert response.status_code == 200
+        events = [
+            json.loads(line.removeprefix("data: ").strip())
+            for line in response.iter_lines()
+            if line and line.startswith("data: ")
+        ]
+
+    assert any(event["type"] == "thought_delta" for event in events)
+    assert any(event["type"] == "message" for event in events)
+    assert "".join(event.get("content", "") for event in events if event["type"] == "message") == "这是真流式回复。"
+    saved = client.get(f"/api/sessions/{session.id}", headers=headers).json()
+    assert saved["messages"][-1]["text"] == "这是真流式回复。"
+    assert "材料依据" in (saved["messages"][-1]["thinking"] or "")
+
+
+def test_v2_chat_uses_tutor_settings_from_current_request(monkeypatch) -> None:
+    monkeypatch.setattr("app.v2.chat.get_agent_graph", lambda: FakeV2SettingsGraph())
+    client = TestClient(app_main.app)
+    headers = auth_headers(client, "tester_v2_tutor_settings")
+    active_config()
+    session = make_session(registered_user_id("tester_v2_tutor_settings"))
+
+    with client.stream(
+        "POST",
+        "/api/v2/chat/stream",
+        headers={**headers, "Accept": "text/event-stream"},
+        json={
+            "session_id": session.id,
+            "message": "给我讲一下",
+            "persona": "plain",
+            "tutor_settings": {"depth_level": 3, "learning_style": "visual", "communication_type": "story"},
+        },
+    ) as response:
+        assert response.status_code == 200
+        events = [
+            json.loads(line.removeprefix("data: ").strip())
+            for line in response.iter_lines()
+            if line and line.startswith("data: ")
+        ]
+
+    assert events[-1]["type"] == "done"
+    saved = client.get(f"/api/sessions/{session.id}", headers=headers).json()
+    assert saved["tutor_settings"]["communication_type"] == "story"
+    assert saved["tutor_settings"]["learning_style"] == "visual"
 
 
 def test_v2_requires_auth() -> None:

@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from ..debug_logging import log_debug_event
-from ..services import call_openai_compatible_chat
+from ..services import call_ollama_chat, call_openai_compatible_chat, chunk_text, normalized_ai_config, stream_openai_compatible_chat
 
 
 def now_iso() -> str:
@@ -62,12 +62,51 @@ def llm_chat(
                 {"role": "user", "content": user_prompt},
             ],
             temperature=temperature,
+            reasoning_effort=ai_config.get("reasoning_effort"),
         )
         log_debug_event("agent.llm.output", model=ai_config.get("model"), output=output)
         return output
     except Exception as exc:
         log_debug_event("agent.llm.error", model=ai_config.get("model"), error=str(exc))
         raise RuntimeError(f"LLM 调用失败：{exc}") from exc
+
+
+def llm_chat_stream(
+    ai_config: dict[str, str] | None,
+    system_prompt: str,
+    user_prompt: str,
+    temperature: float = 0.35,
+):
+    """复用现有模型客户端，以逐段文本形式返回可公开内容。"""
+    if not ai_config:
+        raise RuntimeError("未配置 AI 模型，无法调用 LLM。")
+    try:
+        provider, base_url, api_key, model = normalized_ai_config(ai_config)
+        if provider == "ollama":
+            text = call_ollama_chat(
+                base_url=base_url,
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+            )
+            yield from chunk_text(text)
+            return
+        yield from stream_openai_compatible_chat(
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=temperature,
+            reasoning_effort=ai_config.get("reasoning_effort"),
+        )
+    except Exception as exc:
+        log_debug_event("agent.llm.stream.error", model=(ai_config or {}).get("model"), error=str(exc))
+        raise RuntimeError(f"LLM 流式调用失败：{exc}") from exc
 
 
 def parse_json_from_llm(raw: str) -> dict[str, Any]:

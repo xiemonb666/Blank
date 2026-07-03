@@ -238,6 +238,20 @@ export function AdminStage({
               placeholder="gpt-4.1-mini / llama3"
             />
           </label>
+          <label>
+            <span>推理强度</span>
+            <select
+              value={form.reasoning_effort}
+              onChange={(event) =>
+                onFormChange({ ...form, reasoning_effort: event.target.value as ApiConfigInput["reasoning_effort"] })
+              }
+            >
+              <option value="off">关闭</option>
+              <option value="low">低</option>
+              <option value="medium">中</option>
+              <option value="high">高</option>
+            </select>
+          </label>
           <label className="toggle-line">
             <input
               type="checkbox"
@@ -417,7 +431,7 @@ export function AdminStage({
                     <strong>{config.provider}</strong>
                     <span>{config.base_url}</span>
                     <small>
-                      {providerIsValid ? config.model || "未设置模型" : "配置异常，请删除后重建"} · {config.api_key_masked || "无 key"}
+                      {providerIsValid ? config.model || "未设置模型" : "配置异常，请删除后重建"} · 推理 {config.reasoning_effort} · {config.api_key_masked || "无 key"}
                     </small>
                   </div>
                   <div className="row-actions">
@@ -728,6 +742,7 @@ const API_CONFIG_PRESETS: Array<{ label: string; value: ApiConfigInput }> = [
       base_url: "https://api.moonshot.cn/v1",
       api_key: "",
       model: "kimi-latest",
+      reasoning_effort: "medium",
       is_active: true,
     },
   },
@@ -738,6 +753,7 @@ const API_CONFIG_PRESETS: Array<{ label: string; value: ApiConfigInput }> = [
       base_url: "https://api.deepseek.com",
       api_key: "",
       model: "deepseek-chat",
+      reasoning_effort: "medium",
       is_active: true,
     },
   },
@@ -748,6 +764,7 @@ const API_CONFIG_PRESETS: Array<{ label: string; value: ApiConfigInput }> = [
       base_url: "https://api.openai.com/v1",
       api_key: "",
       model: "gpt-4.1-mini",
+      reasoning_effort: "medium",
       is_active: true,
     },
   },

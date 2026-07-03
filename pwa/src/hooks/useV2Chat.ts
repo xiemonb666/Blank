@@ -1,9 +1,9 @@
 import { useCallback, useRef, useState } from "react";
 import { API_BASE, csrfHeaderFor } from "../api";
-import type { Message, NodeLearningProfile } from "../types";
+import type { Message, NodeLearningProfile, TutorSettings } from "../types";
 
 export interface V2ChatStreamEvent {
-  type: "status" | "thought" | "message" | "feynman_result" | "done" | "error";
+  type: "status" | "thought" | "thought_delta" | "message" | "feynman_result" | "done" | "error";
   agent?: string;
   message?: string;
   content?: string;
@@ -148,6 +148,7 @@ export function useV2Chat() {
       nodeId: string,
       message: string,
       persona: string,
+      tutorSettings?: TutorSettings,
       options: V2SendOptions = {},
     ) => {
       resetNodeTrace(nodeId);
@@ -173,6 +174,7 @@ export function useV2Chat() {
             session_id: sessionId,
             message,
             persona,
+            tutor_settings: tutorSettings,
             confusion_event: options.confusionEvent ?? false,
             starter_event: options.starterEvent ?? false,
           }),
@@ -231,6 +233,7 @@ export function useV2Chat() {
                 }
                 break;
               case "thought":
+              case "thought_delta":
                 const thoughtContent = event.content ?? "";
                 if (thoughtContent) {
                   updateTrace(nodeId, (trace) => ({
